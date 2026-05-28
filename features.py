@@ -1,9 +1,8 @@
-# build_master_and_splits.py
+# features.py
 # Czyta: data/tauron_liga_statystyki_final.csv
 # Tworzy:
 #   - df_master   (pełny, do EDA/debug/aneks)
 #   - df_postmatch (CLEAN: ID + (czy_playoff) + target + diff_*)
-#   - df_prematch (tylko cechy historyczne + h2h)
 
 from __future__ import annotations
 
@@ -110,7 +109,8 @@ TEAM_MAP = {
     "Trefl Proxima Kraków": "Proxima Kraków",
     "Tauron MKS Dąbrowa Górnicza": "MKS Dąbrowa Górnicza",
     "MKS Dąbrowa Górnicza": "MKS Dąbrowa Górnicza",
-    "EcoHarpoon NOWEL LOS No…":"EcoHarpoon NOWEL LOS Nowy Dwór Mazowiecki",
+    "EcoHarpoon NOWEL LOS No…":"LOS Nowy Dwór Mazowiecki",
+    "EcoHarpoon NOWEL LOS Nowy Dwór Mazowiecki":"LOS Nowy Dwór Mazowiecki",
     "Sokol & Hagric Mogilno":"Sokół Mogilno"
 }
 
@@ -327,207 +327,129 @@ def add_match_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 # =========================
-# 3) TEAM HISTORY (PRE-MATCH) - NO LEAKAGE
+# 3) SIDE-OUT EFFICIENCY
 # =========================
-def add_season_progress_features(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.sort_values(["season", "game_id"]).reset_index(drop=True).copy()
+def add_sideout_features(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
 
-    df["match_order"] = df.groupby("season").cumcount()
-    season_n = df.groupby("season")["game_id"].transform("count")
-    df["season_progress"] = df["match_order"] / season_n  # 0..(1 - 1/n)
+    # 1. Obliczamy punkty Side-out (Punkty zdobyte, gdy rywal zagrywał)
+    # W siatkówce: Scoreboard Points = SideOut Points + Break Points
+    df["A_pts_so"] = df["A_scoreboard_points"] - df["A_pts_bp"]
+    df["B_pts_so"] = df["B_scoreboard_points"] - df["B_pts_bp"]
+
+    # 2. Side-out Efficiency (Ratio punktów SO do liczby przyjęć)
+    df["A_so_eff"] = (df["A_pts_so"] / df["A_rec_total"].replace(0, np.nan)).fillna(0)
+    df["B_so_eff"] = (df["B_pts_so"] / df["B_rec_total"].replace(0, np.nan)).fillna(0)
+
+    # 3. Różnica (zmienna do modelu)
+    df["diff_so_eff"] = df["A_so_eff"] - df["B_so_eff"]
 
     return df
-def add_team_history_features(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.sort_values(["season", "game_id"]).reset_index(drop=True).copy()
-
-    team_a = pd.DataFrame({
-        "season": df["season"],
-        "game_id": df["game_id"],
-        "team": df["team_A"],
-        "win": df[TARGET],
-        "pts": df["A_pts_total"],
-        "errors": df["A_errors_total"],
-        "atk_eff": df["A_atk_eff"],
-    })
-    team_b = pd.DataFrame({
-        "season": df["season"],
-        "game_id": df["game_id"],
-        "team": df["team_B"],
-        "win": 1 - df[TARGET],
-        "pts": df["B_pts_total"],
-        "errors": df["B_errors_total"],
-        "atk_eff": df["B_atk_eff"],
-    })
-
-    teams = pd.concat([team_a, team_b], ignore_index=True)
-    teams = teams.sort_values(["season", "team", "game_id"]).reset_index(drop=True)
-
-    g = teams.groupby(["season", "team"])
-
-    teams["matches_before"] = g.cumcount()
-    teams["win_rate_prev"] = g["win"].transform(lambda s: s.shift(1).expanding().mean())
-    teams["win_rate_last5"] = g["win"].transform(lambda s: s.shift(1).rolling(5, min_periods=1).mean())
-
-    teams["pts_prev_all"] = g["pts"].transform(lambda s: s.shift(1).expanding().mean())
-    teams["errors_prev_all"] = g["errors"].transform(lambda s: s.shift(1).expanding().mean())
-    teams["atk_eff_prev_all"] = g["atk_eff"].transform(lambda s: s.shift(1).expanding().mean())
-
-    # liczba wygranych w ostatnich 3 (nie klasyczny streak)
-    teams["wins_last3"] = g["win"].transform(lambda s: s.shift(1).rolling(3, min_periods=1).sum())
-
-    teams["pts_rolling3"] = g["pts"].transform(lambda s: s.shift(1).rolling(3, min_periods=1).mean())
-    teams["errors_rolling3"] = g["errors"].transform(lambda s: s.shift(1).rolling(3, min_periods=1).mean())
-
-    feat = teams[[
-        "season", "game_id", "team",
-        "matches_before", "win_rate_prev", "win_rate_last5",
-        "pts_prev_all", "errors_prev_all", "atk_eff_prev_all",
-        "wins_last3", "pts_rolling3", "errors_rolling3",
-    ]].copy()
-
-    a = feat.rename(columns={"team": "team_A"})
-    b = feat.rename(columns={"team": "team_B"})
-
-    df2 = df.merge(a, on=["season", "game_id", "team_A"], how="left", suffixes=("", "_A"))
-    df2 = df2.merge(b, on=["season", "game_id", "team_B"], how="left", suffixes=("_A", "_B"))
-
-    hist_cols = [
-        "matches_before", "win_rate_prev", "win_rate_last5",
-        "pts_prev_all", "errors_prev_all", "atk_eff_prev_all",
-        "wins_last3", "pts_rolling3", "errors_rolling3",
-    ]
-    for col in hist_cols:
-        df2[f"diff_{col}"] = df2[f"{col}_A"] - df2[f"{col}_B"]
-
-    return df2
 
 # =========================
-# 4) H2H (PRE-MATCH SAFE)
+# 4) WIN-LOSS BALANCE
 # =========================
-def add_czy_playoff_from_h2h(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.sort_values(["season", "game_id"]).reset_index(drop=True).copy()
+def add_win_loss_features(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
 
-    # jeśli nie ma h2h_matches_before, policz ją
-    if "h2h_matches_before" not in df.columns:
-        df["h2h_pair"] = df.apply(lambda r: tuple(sorted((r["team_A"], r["team_B"]))), axis=1)
-        df["h2h_matches_before"] = df.groupby(["season", "h2h_pair"]).cumcount()
-        df = df.drop(columns=["h2h_pair"])
+    # Bilans dla drużyny A
+    df["A_wl_balance"] = (
+        (df["A_srv_aces"] + df["A_atk_points"] + df["A_blk_points"]) -
+        (df["A_srv_errors"] + df["A_rec_errors"] + df["A_atk_errors"] + df["A_atk_blocked"])
+    )
 
-    # playoff = 1, gdy to co najmniej 3. mecz tych drużyn w sezonie (po 2 meczach zasadniczych)
-    df["czy_playoff"] = (df["h2h_matches_before"] >= 2).astype(int)
+    # Bilans dla drużyny B
+    df["B_wl_balance"] = (
+        (df["B_srv_aces"] + df["B_atk_points"] + df["B_blk_points"]) -
+        (df["B_srv_errors"] + df["B_rec_errors"] + df["B_atk_errors"] + df["B_atk_blocked"])
+    )
+
+    # Normalizacja per set (kluczowa dla rzetelności modelu!)
+    df["A_wl_per_set"] = df["A_wl_balance"] / df["number_of_sets"].replace(0, np.nan)
+    df["B_wl_per_set"] = df["B_wl_balance"] / df["number_of_sets"].replace(0, np.nan)
+
+    # Różnica (cecha do modelu)
+    df["diff_wl_per_set"] = df["A_wl_per_set"] - df["B_wl_per_set"]
+
     return df
-def add_h2h_features(df: pd.DataFrame) -> pd.DataFrame:
+
+# =========================
+# 5) PLAYOFF CONTEXT
+# =========================
+def add_czy_playoff(df: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values(["season", "game_id"]).reset_index(drop=True).copy()
 
+    # Liczymy, który to mecz tych dwóch drużyn w danym sezonie
     df["h2h_pair"] = df.apply(lambda r: tuple(sorted((r["team_A"], r["team_B"]))), axis=1)
-    g = df.groupby(["season", "h2h_pair"])
+    df["h2h_matches_before"] = df.groupby(["season", "h2h_pair"]).cumcount()
+    df = df.drop(columns=["h2h_pair"])
 
-    df["h2h_matches_before"] = g.cumcount()
-    df["h2h_win_rate_A"] = g[TARGET].transform(lambda s: s.shift(1).expanding().mean())
-    df["h2h_last_result_A"] = g[TARGET].transform(lambda s: s.shift(1)).fillna(0.5)
-
-    return df.drop(columns=["h2h_pair"])
+    # Playoff = co najmniej 3. mecz tych drużyn w sezonie
+    df["czy_playoff"] = (df["h2h_matches_before"] >= 2).astype(int)
+    return df.drop(columns=["h2h_matches_before"])
 
 # =========================
-# 5) SPLIT
+# 6) POSTMATCH SELECTION
 # =========================
-def split_postmatch_prematch(df_master: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    # PREMATCH: historia + h2h + target + identyfikatory
-    prematch_cols = [
-        "game_id", "season", "team_A", "team_B", TARGET,
-        "czy_playoff",
-        "h2h_matches_before", "h2h_win_rate_A", "h2h_last_result_A",
-        "matches_before_A", "win_rate_prev_A", "win_rate_last5_A",
-        "pts_prev_all_A", "errors_prev_all_A", "atk_eff_prev_all_A",
-        "wins_last3_A", "pts_rolling3_A", "errors_rolling3_A",
-        "matches_before_B", "win_rate_prev_B", "win_rate_last5_B",
-        "pts_prev_all_B", "errors_prev_all_B", "atk_eff_prev_all_B",
-        "wins_last3_B", "pts_rolling3_B", "errors_rolling3_B",
-        "diff_matches_before", "diff_win_rate_prev", "diff_win_rate_last5",
-        "diff_pts_prev_all", "diff_errors_prev_all", "diff_atk_eff_prev_all",
-        "diff_wins_last3", "diff_pts_rolling3", "diff_errors_rolling3", "match_order", "season_progress",
-    ]
-    prematch_cols = [c for c in prematch_cols if c in df_master.columns]
-    df_prematch = df_master[prematch_cols].copy()
+def select_postmatch_cols(df_master: pd.DataFrame) -> pd.DataFrame:
     # POSTMATCH: ID + kontekst + target + diff-y z meczu
     postmatch_cols = [
-        # ID / kontekst
+        # ===== ID / kontekst =====
         "game_id",
         "season",
         "team_A",
         "team_B",
-        "number_of_sets",  # potrzebne do tie-breaków
-        "czy_playoff",  # dodasz wg reguły H2H > 2 w sezonie
+        "number_of_sets",      # Grupa 5: długość meczu
+        "czy_playoff",         # Grupa 5: faza rozgrywek
 
-        # target
+        # ===== target =====
         "win_A",
 
-        # --- różnice z meczu (część "surowa")
-        "diff_atk_errors",
-        "diff_atk_blocked",
-        "diff_atk_points",
-        "diff_atk_success_pct",
+        # ===== Grupa 1: Efektywność Ataku (Siła ognia) =====
+        "diff_atk_eff",        # Królowa statystyk ataku
+        "diff_so_eff",         # Side-Out Efficiency
 
-        "diff_srv_aces",
-        "diff_srv_errors",
+        # ===== Grupa 2: System Defensywny (Blok i Obrona) =====
+        "diff_blk_per_set",    # Bloki punktowe na set
+        "diff_atk_blocked_rate", # Jak często dajemy się zablokować
 
-        "diff_rec_perf_pct",
-        "diff_rec_poz_pct",
-        "diff_rec_errors",
+        # ===== Grupa 3: Zagrywka i Przyjęcie (Inicjacja akcji) =====
+        "diff_srv_eff",        # Bilans asów i błędów
+        "diff_rec_poz_pct",    # Procent przyjęcia pozytywnego
+        "diff_srv_ace_rate",   # Presja zagrywką
 
-        "diff_blk_points",
+        # ===== Grupa 4: Dyscyplina i Błędy Własne (Oddane punkty) =====
+        "diff_error_total_rate", # Łączny % błędów własnych
+        "diff_opp_errors_share", # % punktów z błędów przeciwnika
 
-        # --- cechy utworzone przez Ciebie (feature engineering)
-        "diff_atk_eff",
-        "diff_srv_eff",
-        "diff_errors_total",
-        "diff_opp_errors_share",
-        "diff_opp_errors_pts",
-
-        # --- cechy relatywne (procentowe) ---
-        "diff_rec_error_rate",
-        "diff_srv_ace_rate",
-        "diff_srv_error_rate",
-        "diff_atk_error_rate",
-        "diff_atk_blocked_rate",
-        "diff_blk_per_set",
-        "diff_error_total_rate",
+        # ===== Win-Loss Balance =====
+        "diff_wl_per_set",       # Bilans (atk+blk+srv) - (błędy) na set
     ]
     postmatch_cols = [c for c in postmatch_cols if c in df_master.columns]
     df_postmatch = df_master[postmatch_cols].copy()
-
-
-
-
-    return df_postmatch, df_prematch
+    return df_postmatch
 
 # =========================
 # MAIN PIPELINE
 # =========================
-def build_all(input_file: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def build_all(input_file: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     df_raw = load_final(input_file)
     df0 = rename_and_types(df_raw)
     df0 = df0.sort_values(["season", "game_id"]).reset_index(drop=True)
-    df0 = add_season_progress_features(df0)
 
     df1 = add_match_features(df0)
-    df2 = add_team_history_features(df1)
+    df2 = add_sideout_features(df1)
+    df3 = add_win_loss_features(df2)
+    df4 = add_czy_playoff(df3)
+    df_master = df4.drop(columns=DROP_ALWAYS, errors="ignore")
+    df_postmatch = select_postmatch_cols(df_master)
 
-    df3 = add_h2h_features(df2)
-    df3 = add_czy_playoff_from_h2h(df3)
-
-    df_master = df3.drop(columns=DROP_ALWAYS, errors="ignore")
-    df_postmatch, df_prematch = split_postmatch_prematch(df_master)
-
-    return df_master, df_postmatch, df_prematch
+    return df_master, df_postmatch
 
 if __name__ == "__main__":
-    df_master, df_postmatch, df_prematch = build_all(INPUT_FILE)
+    df_master, df_postmatch = build_all(INPUT_FILE)
     print("MASTER:", df_master.shape)
     print("POSTMATCH:", df_postmatch.shape)
-    print("PREMATCH:", df_prematch.shape)
     df_master.to_csv("data/processed_master.csv", index=False, sep=",", encoding="utf-8-sig")
     df_postmatch.to_csv("data/processed_postmatch.csv", index=False, sep=",", encoding="utf-8-sig")
-    df_prematch.to_csv("data/processed_prematch.csv", index=False, sep=",", encoding="utf-8-sig")
     print(df_postmatch['season'])
-    print(df_prematch.head())
