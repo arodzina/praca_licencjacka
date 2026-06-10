@@ -1,16 +1,11 @@
-# %% md
-# > **Notebook po reorganizacji.** 
-# > Struktura: EDA → Korelacje → 3 zestawy cech → VIF → Logit → PDP/LASSO → Błędy → Wnioski.
-# > Modele 1-3 zdefiniowane w sekcji zestawów. Wykresy używają SET1_FEATURES (Model Ekspercki).
-# 
-# %% md
+#%% md
 # # POSTMATCH — EDA i modelowanie
 # Notebook dla danych post-match: wpływ statystyk z meczu na win_A.
 # 
-# %% md
+#%% md
 # ## 1) Importy, konfiguracja i funkcje pomocnicze
 # 
-# %%
+#%%
 from pathlib import Path
 from IPython.display import display
 
@@ -27,7 +22,8 @@ from sklearn.metrics import (
     accuracy_score,
     roc_auc_score,
 )
-from sklearn.model_selection import cross_val_score, train_test_split
+from sklearn.model_selection import  cross_val_score, train_test_split
+
 
 PROJECT_DIR = Path.cwd().resolve()
 DATA_FILE = PROJECT_DIR / "data" / "processed_postmatch.csv"
@@ -36,14 +32,12 @@ TARGET = "win_A"
 FIGURES_DIR = PROJECT_DIR / "figures"
 EDA_DIR = FIGURES_DIR / "eda_postmatch"
 MODELING_DIR = FIGURES_DIR / "modeling_postmatch"
-TABLES_DIR = FIGURES_DIR / "tables_postmatch"
 
 EDA_DIR.mkdir(parents=True, exist_ok=True)
 MODELING_DIR.mkdir(parents=True, exist_ok=True)
 TABLES_DIR.mkdir(parents=True, exist_ok=True)
 
-
-# %%
+#%%
 def detect_sep(path: Path) -> str:
     first_line = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()[0]
     return ";" if first_line.count(";") > first_line.count(",") else ","
@@ -96,9 +90,10 @@ def remove_constant_features(df_in, features, label="cechy"):
     return valid
 
 
-# %% md
+
+#%% md
 # ## 2) Wczytanie danych
-# %%
+#%%
 sep = detect_sep(DATA_FILE)
 df = pd.read_csv(DATA_FILE, sep=sep, encoding="utf-8-sig")
 df[TARGET] = pd.to_numeric(df[TARGET], errors="coerce")
@@ -129,39 +124,32 @@ print(data_summary.to_string())
 druzyny_str = ", ".join(teams)
 print(f"Druzyny ({len(teams)}): {druzyny_str}")
 
-# %% md
+#%% md
 # ## 3) EDA — analiza danych
-# %%
+#%%
 print(df[TARGET].value_counts())
-df[TARGET].value_counts().plot.pie(autopct="%1.1f%%", labels=["Wygrana A", "Przegrana A"],
-                                   colors=["#2ECC71", "#E74C3C"], textprops={"fontsize": 14})
+df[TARGET].value_counts().plot.pie(autopct="%1.1f%%", labels=["Wygrana A", "Przegrana A"], colors=["#2ECC71", "#E74C3C"], textprops={"fontsize": 14})
 plt.ylabel("")
 plt.title("Balans targetu (win_A)", fontweight="bold")
 plt.savefig(plot_path("eda", "target_balance.png"), dpi=150, bbox_inches="tight")
 plt.show()
-# %%
+
+#%%
 # === Analiza przewagi gospodarzy ===
-print("=" * 65)
-print("PRZEWAGA GOSPODARZY (HOME ADVANTAGE)")
-print("=" * 65)
 
 home_win_rate = df["win_A"].mean()
 print(f"  Ogólny win rate gospodarzy (A): {home_win_rate:.1%}")
 from scipy.stats import binomtest
-
 p_val = binomtest((df["win_A"] == 1).sum(), len(df), p=0.5).pvalue
 print(f"  Test dwumianowy H0: win_rate = 0.5, p = {p_val:.4f}")
-print(f"  Wniosek: {'przewaga istotna statystycznie' if p_val < 0.05 else 'brak podstaw do odrzucenia H0'}")
 wins = (df["win_A"] == 1).sum()
 print(f"  ({wins} wygranych na {len(df)} meczów)")
-print()
 
 # Wg sezonu
 print("  Win rate gospodarzy wg sezonu:")
 season_home = df.groupby("season")["win_A"].agg(["mean", "count"])
 season_home.columns = ["Win rate", "Mecze"]
 print(season_home.to_string())
-print()
 
 # Prawdziwa przewaga hali (win rate u siebie vs na wyjeździe)
 print("  Prawdziwa przewaga hali (win rate u siebie - win rate na wyjeździe):")
@@ -171,10 +159,20 @@ team_ha = pd.DataFrame({
     "Win rate u siebie": team_home,
     "Win rate na wyjeździe": team_away,
 })
+# Liczba meczów ogółem (u siebie + na wyjeździe)
+team_home_count = df.groupby("team_A")["win_A"].count()
+team_away_count = df.groupby("team_B")["win_A"].count()
+team_ha["Liczba meczów"] = team_home_count + team_away_count
+
 team_ha["Przewaga hali"] = team_ha["Win rate u siebie"] - team_ha["Win rate na wyjeździe"]
 team_ha = team_ha.sort_values("Przewaga hali", ascending=False)
+# Przestawienie kolejności kolumn
+team_ha = team_ha[["Liczba meczów", "Win rate u siebie", "Win rate na wyjeździe", "Przewaga hali"]]
+# Konwersja win rate na procenty
+for col in ["Win rate u siebie", "Win rate na wyjeździe", "Przewaga hali"]:
+    team_ha[col] = (team_ha[col] * 100).round(1)
+team_ha.columns = ["Liczba meczów", "Win rate u siebie (%)", "Win rate na wyjeździe (%)", "Przewaga hali (p.p.)"]
 print(team_ha.to_string())
-print()
 
 # Wykres
 fig, ax = plt.subplots(figsize=(10, 5))
@@ -182,7 +180,6 @@ fig, ax = plt.subplots(figsize=(10, 5))
 # Win rate wg sezonu (tylko ten panel)
 season_home["Win rate"].plot.bar(ax=ax, color="#2ECC71", edgecolor="white")
 ax.axhline(y=0.5, color="gray", linestyle="--", linewidth=0.8, label="50% (brak przewagi gospodyń)")
-# Tytuł usunięty — podpis pod rysunkiem w dokumencie
 ax.set_xlabel("Sezon")
 ax.set_ylabel("Wskaźnik wygranych")
 ax.set_ylim(0, 1)
@@ -193,57 +190,50 @@ plt.tight_layout()
 plt.savefig(plot_path("eda", "home_advantage.png"), dpi=150, bbox_inches="tight")
 plt.show()
 
-# %% md
-# zróżnicowanie miedzy sezonami jest dosc spore w sumie
-# %%
+#%%
 # === Przewaga gospodarzy w tie-breakach (5 set) ===
-print("=" * 65)
-print("PRZEWAGA GOSPODARZY W TIE-BREAKACH (5 SETÓW)")
-print("=" * 65)
 
 df_tb = df[df["number_of_sets"] == 5].copy()
 print(f"  Liczba meczów 5-setowych: {len(df_tb)}")
-print()
 
 tb_win_rate = df_tb["win_A"].mean()
 print(f"  Win rate gospodarzy w tie-breakach: {tb_win_rate:.1%}")
 wins_tb = (df_tb["win_A"] == 1).sum()
 print(f"  ({wins_tb} wygranych na {len(df_tb)} meczów)")
-print()
 
 all_home = df["win_A"].mean()
 print(f"  Dla porównania – win rate gospodarzy ogólnie: {all_home:.1%}")
 print(f"  Różnica (tie-break vs ogółem): {tb_win_rate - all_home:+.1%}")
-print()
 
 # Wg sezonu
 print("  Win rate gospodarzy w tie-breakach wg sezonu:")
 tb_season = df_tb.groupby("season")["win_A"].agg(["mean", "count"])
 tb_season.columns = ["Win rate", "Mecze"]
 print(tb_season.to_string())
-print()
 
-# Porównanie: tie-break vs pozostale mecze
-df["czy_tiebreak"] = (df["number_of_sets"] == 5).astype(int)
-comparison = df.groupby("czy_tiebreak")["win_A"].agg(["mean", "count"])
-comparison.index = ["3-4 sety", "5 setów (tie-break)"]
+# Porównanie: win rate wg liczby setów
+comparison = df.groupby("number_of_sets")["win_A"].agg(["mean", "count"])
+comparison.index = ["3 sety", "4 sety", "5 setów (tie-break)"]
 comparison.columns = ["Win rate gospodarzy", "Liczba meczów"]
-print("  Porównanie win rate gospodarzy:")
+print("  Porównanie win rate gospodarzy wg liczby setów:")
 print(comparison.to_string())
-print()
-
-# Czyscimy pomocnicza kolumne
-df.drop(columns=["czy_tiebreak"], inplace=True, errors="ignore")
 
 # Wykres porównawczy
-fig, ax = plt.subplots(figsize=(6, 5))
+fig, ax = plt.subplots(figsize=(8, 5))
 
-categories = ["3–4 sety\n(N = " + str(int(comparison.loc["3-4 sety", "Liczba meczów"])) + ")",
-              "5 setów – tie-break\n(N = " + str(int(comparison.loc["5 setów (tie-break)", "Liczba meczów"])) + ")"]
+n3 = int(comparison.loc['3 sety', 'Liczba meczów'])
+n4 = int(comparison.loc['4 sety', 'Liczba meczów'])
+n5 = int(comparison.loc['5 setów (tie-break)', 'Liczba meczów'])
+categories = [
+    f"3 sety\n(N = {n3})",
+    f"4 sety\n(N = {n4})",
+    f"5 setów – tie-break\n(N = {n5})",
+]
 values = comparison["Win rate gospodarzy"].values
 
 x = np.arange(len(categories))
-bars = ax.bar(x, values, width=0.45, color=["#2E86AB", "#A8DADC"], edgecolor="black", linewidth=0.8)
+bars = ax.bar(x, values, width=0.45, color=["#2E86AB", "#4C9BE8", "#A8DADC"],
+               edgecolor="black", linewidth=0.8)
 
 # Etykiety wartości na słupkach
 for bar, val in zip(bars, values):
@@ -253,11 +243,11 @@ for bar, val in zip(bars, values):
 # Linia 50%
 ax.axhline(0.50, color="gray", linestyle="--", linewidth=1.2, label="50% (brak przewagi)")
 
-# Tytuł usunięty — podpis pod rysunkiem w dokumencie
 ax.set_xticks(x)
 ax.set_xticklabels(categories, fontsize=11)
+ax.set_xlabel("Liczba setów", fontsize=11)
 ax.set_ylabel("Wskaźnik wygranych gospodyń", fontsize=11)
-ax.set_ylim(0.40, 0.65)
+ax.set_ylim(0.40, 0.70)
 ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f"{y:.0%}"))
 ax.legend(fontsize=10)
 ax.spines["top"].set_visible(False)
@@ -275,8 +265,7 @@ n_tb = len(df_tb)
 p_val_tb = binomtest(wins_tb, n_tb, p=0.5).pvalue
 
 print(f"Test dwumianowy dla tie-breaków (H0: win_rate = 0.5): p-value = {p_val_tb:.4f}")
-if p_val_tb > 0.05:
-    print("Wniosek: W meczach 5-setowych przewaga własnego boiska NIE JEST istotna statystycznie.")
+
 
 # 2. Porównanie proporcji 3-4 sety vs 5 setów
 df_34 = df[df["number_of_sets"] < 5]
@@ -290,13 +279,11 @@ stat, pval_prop = proportions_ztest(count, nobs)
 
 print(f"Z-test różnicy proporcji (3-4 sety vs tie-break): p-value = {pval_prop:.4f}")
 
-# %% md
-# target jest mniej więcej zbalansowany, porownanie pokazuje ze w tiebreakach to nie ma wiekszej roznicy czy sie gra u siebie
-# %% md
+#%% md
 # ### 3.1.Braki danych
 # 
 # Sprawdzamy, które cechy mają braki i ile wierszy zostanie odrzuconych przez `dropna` w modelu.
-# %%
+#%%
 nan_counts = df.isna().sum()
 nan_table = (
     nan_counts[nan_counts > 0]
@@ -331,11 +318,10 @@ else:
 
 print(completeness_summary.to_string())
 
-# %%
+#%%
 # === Statystyki druzynowe z originalnego df ===
 
 
-# Uzywamy df bezposrednio, zamiast df_profiles_base, zeby miec wszystkie diff_* kolumny
 team_stats = (
     df.groupby("team_A")
     .agg(
@@ -355,42 +341,18 @@ team_stats = (
 
 print(team_stats.head(10).round(4).to_string())
 
-# === Scatter plot — wszystkie cechy SET1 vs win rate ===
-fig, axes = plt.subplots(2, 4, figsize=(18, 10))
-all_feats_team = ["diff_atk_eff", "diff_blk_per_set", "diff_srv_eff",
-                  "diff_rec_pos_pct", "diff_opp_errors_share",
-                  "num_sets", "is_playoff"]
-for ax, feat in zip(axes.flatten(), all_feats_team):
-    col = f"avg_{feat}"
-    if col in team_stats.columns:
-        team_stats.plot.scatter(x=col, y="win_rate", ax=ax, alpha=0.7, s=40)
-        corr_val = team_stats[col].corr(team_stats["win_rate"])
-        ax.set_title(f'{feat} r = {corr_val:.3f}', fontsize=9, fontweight='bold')
-        ax.set_xlabel("")
-        ax.set_ylabel("Win rate", fontsize=8)
 
-for i_ax in range(len(all_feats_team), len(axes.flatten())):
-    axes.flatten()[i_ax].set_visible(False)
-
-plt.suptitle("Korelacja statystyk druzynowych z win rate", fontsize=14, fontweight="bold")
-plt.tight_layout()
-plt.savefig(plot_path("eda", "team_stats_vs_winrate.png"), dpi=150, bbox_inches="tight")
-plt.show()
-
-# %%
+#%%
 # === Box ploty diff_ vs win/loss ===
 import matplotlib.patches as mpatches
 
-print("=" * 70)
-print("ROZKŁAD CECH WG WYNIKU MECZU")
-print("=" * 70)
 
 features = [
-    ("diff_atk_eff", "Efektywność ataku\n(diff_atk_eff)"),
-    ("diff_blk_per_set", "Bloki/set\n(diff_blk_per_set)"),
-    ("diff_srv_eff", "Efektywność zagrywki\n(diff_srv_eff)"),
-    ("diff_rec_pos_pct", "Przyjęcie pozytywne\n(diff_rec_pos_pct)"),
-    ("diff_opp_errors_share", "Błędy rywala\n(diff_opp_errors_share)"),
+    ("diff_atk_eff",        "Efektywność ataku\n(diff_atk_eff)"),
+    ("diff_blk_per_set",    "Bloki/set\n(diff_blk_per_set)"),
+    ("diff_srv_eff",        "Efektywność zagrywki\n(diff_srv_eff)"),
+    ("diff_rec_pos_pct",    "Przyjęcie pozytywne\n(diff_rec_pos_pct)"),
+    ("diff_opp_errors_share","Błędy rywala\n(diff_opp_errors_share)"),
 ]
 
 fig, axes = plt.subplots(2, 3, figsize=(13, 8))
@@ -410,7 +372,6 @@ for i, (col, title) in enumerate(features):
     for patch, v in zip(bp["boxes"], [0, 1]):
         patch.set_facecolor(colors[v])
         patch.set_alpha(0.75)
-    # Tytuł usunięty — podpis pod rysunkiem w dokumencie
     ax.set_title(title, fontsize=10)
     ax.set_xticks([1, 2])
     ax.set_xticklabels(["Przegrana", "Wygrana"], fontsize=9)
@@ -432,9 +393,7 @@ plt.savefig(plot_path("eda", "boxplot_diff_vs_win.png"), dpi=300, bbox_inches="t
 plt.show()
 
 # number_of_sets — rozklad wygranych wg liczby setow
-print("\n" + "=" * 70)
 print("LICZBA SETOW A WYNIK MECZU")
-print("=" * 70)
 
 fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
@@ -442,8 +401,8 @@ fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 sets_winrate = df.groupby("number_of_sets")["win_A"].mean()
 sets_count = df.groupby("number_of_sets")["win_A"].count()
 
-axes[0].bar(sets_winrate.index, sets_winrate.values,
-            color=["#3498DB", "#2ECC71", "#E74C3C"], edgecolor="white", width=0.5)
+axes[0].bar(sets_winrate.index, sets_winrate.values, 
+           color=["#3498DB", "#2ECC71", "#E74C3C"], edgecolor="white", width=0.5)
 axes[0].axhline(y=0.5, color="gray", linestyle="--", linewidth=0.8, label="50%")
 axes[0].set_xlabel("Liczba setow")
 axes[0].set_ylabel("Win rate gospodarzy (A)")
@@ -454,8 +413,8 @@ for x, y in zip(sets_winrate.index, sets_winrate.values):
 axes[0].legend()
 
 # Licznosc meczow wedlug liczby setow
-axes[1].bar(sets_count.index, sets_count.values,
-            color=["#3498DB", "#2ECC71", "#E74C3C"], edgecolor="white", width=0.5)
+axes[1].bar(sets_count.index, sets_count.values, 
+           color=["#3498DB", "#2ECC71", "#E74C3C"], edgecolor="white", width=0.5)
 axes[1].set_xlabel("Liczba setow")
 axes[1].set_ylabel("Liczba meczow")
 axes[1].set_title("Liczba meczow wg liczby setow", fontweight="bold")
@@ -467,22 +426,20 @@ plt.savefig(plot_path("eda", "sets_distribution.png"), dpi=150, bbox_inches="tig
 plt.show()
 
 # is_playoff — porownanie win rate
-print("\n" + "=" * 70)
 print("PLAYOFF A WYNIK MECZU")
-print("=" * 70)
 
 playoff_winrate = df.groupby("is_playoff")["win_A"].mean()
 playoff_count = df.groupby("is_playoff")["win_A"].count()
 
 fig, ax = plt.subplots(figsize=(6, 5))
 bars = ax.bar(["Sezon zasadniczy", "Playoff"], playoff_winrate.values,
-              color=["#3498DB", "#E74C3C"], edgecolor="white", width=0.5)
+        color=["#3498DB", "#E74C3C"], edgecolor="white", width=0.5)
 ax.axhline(y=0.5, color="gray", linestyle="--", linewidth=0.8, label="50%")
 ax.set_ylim(0, 1)
 ax.set_ylabel("Win rate gospodarzy (A)")
 ax.set_title("Win rate w sezonie vs playoff", fontweight="bold")
 for bar, val in zip(bars, playoff_winrate.values):
-    ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.02,
+    ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.02,
             f"{val:.1%}", ha="center", fontsize=11, fontweight="bold")
 ax.legend()
 plt.tight_layout()
@@ -492,7 +449,7 @@ plt.show()
 print(f"  Mecze w sezonie: {playoff_count.values[0]}")
 print(f"  Mecze w playoff: {playoff_count.values[1]}")
 
-# %%
+#%%
 # === PRAWDZIWA PRZEWAGA GOSPODARZA (Oczyszczona z ogólnej siły drużyny) ===
 
 teams = sorted(set(df["team_A"]).union(set(df["team_B"])))
@@ -512,7 +469,7 @@ for team in teams:
     total_games = home_games + away_games
     total_wins = home_wins + away_wins
 
-    if total_games > 0 and total_wins > 0:  # Odrzucamy drużyny bez zwycięstw
+    if total_games > 0 and total_wins > 0: # Odrzucamy drużyny bez zwycięstw
         home_win_rate = home_wins / home_games if home_games > 0 else 0
         away_win_rate = away_wins / away_games if away_games > 0 else 0
 
@@ -529,7 +486,6 @@ for team in teams:
 df_ha = pd.DataFrame(ha_records)
 
 # Filtr: Bierzemy pod uwagę tylko drużyny, które wygrały w lidze łącznie minimum 20 meczów
-# (żeby uniknąć szumu statystycznego, np. drużyny, która wygrała 1 mecz u siebie i 0 na wyjeździe)
 df_ha = df_ha[df_ha["Wygrane (Suma)"] >= 20].copy()
 
 # Sortujemy po prawdziwej przewadze hali (Delta)
@@ -553,72 +509,30 @@ for bar, val in zip(bars, df_ha["Delta (Dom - Wyjazd)"]):
     x_pos = bar.get_width()
     ha = 'left' if x_pos > 0 else 'right'
     offset = 0.01 if x_pos > 0 else -0.01
-    plt.text(x_pos + offset, bar.get_y() + bar.get_height() / 2, f"{val:+.1%}",
+    plt.text(x_pos + offset, bar.get_y() + bar.get_height()/2, f"{val:+.1%}",
              va='center', ha=ha, fontsize=9, fontweight='bold')
 
-plt.xlim(-0.25, 0.4)  # Dostosuj oś X w razie potrzeby
+plt.xlim(-0.25, 0.4) # Dostosuj oś X w razie potrzeby
 plt.tight_layout()
 plt.savefig(plot_path("eda", "true_home_advantage.png"), dpi=150, bbox_inches="tight")
 plt.show()
-# %%
-# === Win rate wedlug kwartyla statystyki ===
-feats_q = ["diff_atk_eff", "diff_blk_per_set", "diff_srv_eff", "diff_rec_pos_pct", "diff_opp_errors_share"]
 
-fig, axes = plt.subplots(1, 5, figsize=(22, 5))
-for ax, feat in zip(axes, feats_q):
-    df[f"{feat}_q"] = pd.qcut(df[feat], 4, labels=["Q1", "Q2", "Q3", "Q4"])
-    wr = df.groupby(f"{feat}_q", observed=True)["win_A"].mean()
-    wr.plot.bar(ax=ax, color="#3498DB", edgecolor="white")
-    ax.axhline(0.5, color="gray", linestyle="--", linewidth=0.8, label="50%")
-    ax.set_title(feat.replace("diff_", ""), fontsize=9, fontweight="bold")
-    ax.set_ylim(0, 1)
-    ax.set_xlabel("")
-    ax.set_ylabel("Win rate" if feat == feats_q[0] else "")
-    ax.tick_params(axis="x", rotation=0)
-    for bar, val in zip(ax.patches, wr.values):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.02,
-                f"{val:.0%}", ha="center", fontsize=9, fontweight="bold")
-    ax.legend(fontsize=7)
-
-plt.suptitle("Win rate wg kwartyla statystyki", fontsize=13, fontweight="bold")
-plt.tight_layout()
-plt.savefig(plot_path("eda", "winrate_kwartyle.png"), dpi=150, bbox_inches="tight")
-plt.show()
-
-# Czyscimy pomocnicze kolumny
-for feat in feats_q:
-    df.drop(columns=[f"{feat}_q"], inplace=True, errors="ignore")
-
-# %% md
-# zaczynamy od zestawu 12 cech z roznych aspektow gry i szukamy kombinacji o najmniejszej multikolinearnosci
-# %% md
+#%% md
 # ## 4) Selekcja cech
 # 
 # Najpierw usuwamy silnie skorelowane cechy, żeby uniknąć multikolinearności. Potem na wybranych robimy EDA.
-# %%
+#%%
 corr_cols = FEATURES_ALL + [TARGET]
 corr = df[corr_cols].corr()
-
 plt.figure(figsize=(14, 12))
-sns.heatmap(
-    corr,
-    cmap="RdBu_r",
-    center=0,
-    annot=True,
-    annot_kws={"size": 12},
-    fmt=".2f",
-    linewidths=0.5,
-    square=True,
-)
-
-plt.title("Macierz korelacji – wszystkie cechy + target", fontsize=16, fontweight="bold")
+sns.heatmap(    corr,    cmap="RdBu_r",    center=0,    annot=True,    annot_kws={"size": 12},    fmt=".2f",    linewidths=0.5,    square=True,)
 plt.xticks(rotation=45, ha="right", fontsize=11)
 plt.yticks(rotation=0, fontsize=11)
 plt.tight_layout()
-plt.savefig(plot_path("eda", "heatmap_korelacji_z_targetem.png"), dpi=150, bbox_inches="tight")
+plt.savefig(plot_path("eda", "Rys_macierz_korelacji.png"), dpi=150, bbox_inches="tight")
 plt.show()
 
-# %%
+#%%
 target_corr = (
     df[FEATURES_ALL + [TARGET]]
     .corr()[TARGET]
@@ -631,7 +545,7 @@ target_corr = target_corr.rename(columns={"index": "Cecha"})
 
 print(target_corr[["Cecha", "Korelacja"]].round(4).to_string())
 
-# %%
+#%%
 corr_pred = df[FEATURES_ALL].corr()
 pairs = []
 for i, col1 in enumerate(corr_pred.columns):
@@ -644,22 +558,8 @@ pairs_df["|r|"] = pairs_df["r"].abs()
 pairs_df = pairs_df.sort_values("|r|", ascending=False)
 print(pairs_df[pairs_df["|r|"] > 0.70].round(4).to_string())
 
-# %% md
-# ### 4.1. Wnioski z analizy korelacji (Redukcja wymiarowości)
-# 
-# Z powyższej analizy par o wysokiej korelacji (|r| > 0.70) płyną jasne wnioski statystyczne, które pokrywają się z logiką gry w siatkówkę:
-# 1. **Atak a Side-out:** Zmienna `diff_so_eff` (skuteczność wyjścia z przyjęcia) jest drastycznie skorelowana z `diff_atk_eff` (efektywnością ataku). Wynika to z faktu, że większość akcji side-out kończy się atakiem. Pozostawienie obu zmiennych doprowadziłoby do współliniowości. Wybieramy `diff_atk_eff` jako miarę bardziej uniwersalną (obejmuje też kontrataki).
-# 2. **Kaskada błędów:** Zmienne takie jak `diff_error_total_rate` są sumą innych błędów (w ataku, na zagrywce). Nie możemy w jednym modelu umieścić szczegółowych wskaźników efektywności (które już zawierają w sobie kary za błędy) oraz ogólnego wskaźnika błędów.
-# 3. **Punkty a wskaźniki per set:** Aby zniwelować różnice między krótkimi (3 sety) a długimi (5 setów) meczami, opieramy się na wartościach uśrednionych (`per_set`) lub procentowych (`rate`, `eff`), odrzucając statystyki absolutne (jak łączna liczba bloków).
-# %% md
-# ### 4.2. Definicja Zestawów Cech (Feature Sets)
-# 
-# Opierając się na powyższej filtracji statystycznej oraz wiedzy domenowej o siatkówce, zamiast szukać jednego "idealnego" modelu, celowo definiujemy **trzy różne ujęcia analityczne**. Pozwoli to sprawdzić stabilność wniosków i zbadać grę z różnych perspektyw:
-# 
-# * **Model 1 (Ekspercki):** Nasz model główny. Reprezentuje "siatkarskie DNA". Zawiera po jednym, najlepszym wskaźniku z każdego elementu rzemiosła (Atak, Blok, Serwis, Przyjęcie, darmowe punkty z błędów rywala). Zbudowany tak, by minimalizować VIF.
-# * **Model 2 (Dyscyplina i Presja):** Skupia się na "ciemnej stronie gry". Wyklucza czystą jakość ataku na rzecz miar takich jak błędy własne (`error_total_rate`) i bycie zatrzymanym przez blok rywala (`atk_blocked_rate`).
-# * **Model 3 (Full - Baseline):** Model kontrolny, do którego "wrzucono" wszystkie 12 statystyk. Służy wyłącznie do celów diagnostycznych, by matematycznie udowodnić (poprzez wysoki VIF), że nadmiar danych szkodzi interpretacji. Zmienne kontekstowe (`is_playoff`, `number_of_sets`) dodawane są do każdego modelu jako zmienne kontrolne.
-# %%
+
+#%%
 SET1_FEATURES = [
     "diff_atk_eff",
     "diff_blk_per_set",
@@ -669,6 +569,7 @@ SET1_FEATURES = [
     "number_of_sets",
     "is_playoff",
 ]
+
 
 SET2_FEATURES = [
     "diff_atk_blocked_rate",
@@ -696,7 +597,7 @@ SET3_FEATURES = [
 
 feature_sets_table = pd.DataFrame(
     [
-        {"Model": "Model 1 – Ekspercki", "Liczba cech": len(SET1_FEATURES), "Cechy": ", ".join(SET1_FEATURES)},
+        {"Model": "Model 1 – Główny", "Liczba cech": len(SET1_FEATURES), "Cechy": ", ".join(SET1_FEATURES)},
         {"Model": "Model 2 – Dyscyplina", "Liczba cech": len(SET2_FEATURES), "Cechy": ", ".join(SET2_FEATURES)},
         {"Model": "Model 3 – Full", "Liczba cech": len(SET3_FEATURES), "Cechy": ", ".join(SET3_FEATURES)},
     ]
@@ -704,47 +605,18 @@ feature_sets_table = pd.DataFrame(
 
 print(feature_sets_table.to_string())
 
-# %%
-fig_labels = ["4a", "4b", "4c"]
-for idx, (name, feats) in enumerate(sets):
-    corr_cols = feats + [TARGET]
-    corr = df[corr_cols].corr()
-
-    plt.figure(figsize=(len(corr_cols) * 1.2, len(corr_cols) * 1.0))
-    sns.heatmap(
-        corr,
-        cmap="RdBu_r",
-        center=0,
-        annot=True,
-        annot_kws={"size": 14},
-        fmt=".2f",
-        linewidths=0.3,
-        square=True,
-        cbar_kws={"shrink": 0.9},
-    )
-    # Brak plt.title() — podpis "Rys. 4x. ..." idzie pod rysunkiem w pracy
-    plt.xticks(rotation=45, ha="right", fontsize=9)
-    plt.yticks(rotation=0, fontsize=9)
-    plt.tight_layout()
-    plt.savefig(
-        plot_path("eda", f"macierz_korelacji_Rys{fig_labels[idx]}.png"),
-        dpi=150,
-        bbox_inches="tight"
-    )
-    plt.show()
-
-# %% md
+#%% md
 # ## 5) Regresja logistyczna i porównanie modeli
 # 
 # W tej części porównujemy trzy zestawy cech. Najpierw dopasowujemy modele
 # `Logit`, potem zestawiamy współczynniki i na końcu sprawdzamy prostą
 # walidację `train/test`.
 # 
-# %%
+#%%
 import statsmodels.api as sm
 
 models_def = [
-    ("Model 1 – Ekspercki", SET1_FEATURES),
+    ("Model 1 – Główny", SET1_FEATURES),
     ("Model 2 – Dyscyplina", SET2_FEATURES),
     ("Model 3 – Full", SET3_FEATURES),
 ]
@@ -779,7 +651,7 @@ for name, feats in models_def:
 
 print(pd.DataFrame(fit_rows).round(4).to_string())
 
-# %%
+#%%
 from sklearn.metrics import confusion_matrix
 from sklearn.preprocessing import RobustScaler
 
@@ -861,28 +733,25 @@ print(f"Najwyższe Pseudo R-squared (model opisowy): {best_descriptive_model}")
 print(f"Główna metryka walidacyjna: LOSO (Leave-One-Season-Out) — poprawna czasowo.")
 
 # === Krok 3: Zmienne potrzebne w dalszych komórkach (diagnostyka na 80/20) ===
-X_tr1 = split_store["Model 1 – Ekspercki"]["X_tr"]
-X_te1 = split_store["Model 1 – Ekspercki"]["X_te"]
-y_tr1 = split_store["Model 1 – Ekspercki"]["y_tr"]
-y_te1 = split_store["Model 1 – Ekspercki"]["y_te"]
-X_tr1_s = split_store["Model 1 – Ekspercki"]["X_tr_s"]
-X_te1_s = split_store["Model 1 – Ekspercki"]["X_te_s"]
-scaler1 = scalers_store["Model 1 – Ekspercki"]
+X_tr1 = split_store["Model 1 – Główny"]["X_tr"]
+X_te1 = split_store["Model 1 – Główny"]["X_te"]
+y_tr1 = split_store["Model 1 – Główny"]["y_tr"]
+y_te1 = split_store["Model 1 – Główny"]["y_te"]
+X_tr1_s = split_store["Model 1 – Główny"]["X_tr_s"]
+X_te1_s = split_store["Model 1 – Główny"]["X_te_s"]
+scaler1 = scalers_store["Model 1 – Główny"]
 logit_mod1_clean = sm.Logit(y_tr1, sm.add_constant(X_tr1)).fit(disp=0)
 
 # === Krok 4: Model opisowy na pełnych danych (dla tabeli OR i efektów krańcowych) ===
 X_full, y_full = prepare_xy(df, SET1_FEATURES)
 logit_mod1_full = sm.Logit(y_full, sm.add_constant(X_full)).fit(disp=0)
 
-# %%
+#%%
 # === BRIER SCORE dla wszystkich trzech modeli (na zbiorze testowym 20%) ===
 from sklearn.metrics import brier_score_loss
 
-print("=" * 60)
-print("BRIER SCORE — kalibracja probabilistyczna (zbiór testowy 20%)")
-print("=" * 60)
 
-for name in ["Model 1 – Ekspercki", "Model 2 – Dyscyplina", "Model 3 – Full"]:
+for name in ["Model 1 – Główny", "Model 2 – Dyscyplina", "Model 3 – Full"]:
     model = trained_sk_models[name]
     X_te = split_store[name]["X_te_s"]
     y_te = split_store[name]["y_te"]
@@ -890,8 +759,8 @@ for name in ["Model 1 – Ekspercki", "Model 2 – Dyscyplina", "Model 3 – Ful
     bs = brier_score_loss(y_te, y_prob)
     print(f"  {name:30s}  Brier = {bs:.4f}")
 
-# %%
-# === TABELA WSPÓŁCZYNNIKÓW I ILORAZÓW SZANS — Model 1 (Ekspercki) ===
+#%%
+# === TABELA WSPÓŁCZYNNIKÓW I ILORAZÓW SZANS — Model 1 (Główny) ===
 import statsmodels.api as sm
 import numpy as np
 import pandas as pd
@@ -906,37 +775,33 @@ X_full_pct[scale_feats] = X_full_pct[scale_feats] * 100
 # 2. Fitujemy model na nowej, znormalizowanej skali
 logit_mod1_full = sm.Logit(y_full, sm.add_constant(X_full_pct)).fit(disp=0)
 
-# 3. Budujemy elegancką tabelę
+# 3. Budujemy  tabelę
 coef_rows = []
 for feature in SET1_FEATURES:
     if feature not in logit_mod1_full.params.index:
         continue
 
     coef = logit_mod1_full.params[feature]
-    se = logit_mod1_full.bse[feature]
+    se   = logit_mod1_full.bse[feature]
     pval = logit_mod1_full.pvalues[feature]
-    OR = np.exp(coef)
+    OR   = np.exp(coef)
     ci_lo, ci_hi = np.exp(logit_mod1_full.conf_int().loc[feature])
 
     # Przypisywanie gwiazdek istotności
-    if pval < 0.001:
-        stars = "***"
-    elif pval < 0.01:
-        stars = "**"
-    elif pval < 0.05:
-        stars = "*"
-    else:
-        stars = ""
+    if pval < 0.001:   stars = "***"
+    elif pval < 0.01:  stars = "**"
+    elif pval < 0.05:  stars = "*"
+    else:              stars = ""
 
     coef_rows.append({
-        "Cecha": feature,
-        "Coef": round(coef, 4),
-        "SE": round(se, 4),
-        "p-value": round(pval, 4),
-        "Istotność": stars,
+        "Cecha":      feature,
+        "Coef":       round(coef, 4),
+        "SE":         round(se, 4),
+        "p-value":    round(pval, 4),
+        "Istotność":  stars,
         "Odds Ratio": round(OR, 4),
         "OR 95% low": round(ci_lo, 4),
-        "OR 95% hi": round(ci_hi, 4),
+        "OR 95% hi":  round(ci_hi, 4),
     })
 
 coef_df = pd.DataFrame(coef_rows)
@@ -948,15 +813,8 @@ print("=" * 95)
 # Wyświetlamy posortowane po wielkości efektu (Odds Ratio)
 print(coef_df.sort_values("Odds Ratio", ascending=False).reset_index(drop=True).to_string())
 
-print("Istotność: * p<0.05  ** p<0.01  *** p<0.001")
-print("\n📌 NOTA INTERPRETACYJNA DO ODDS RATIO (OR):")
-print(" • Dla zmiennych procentowych (atak, zagrywka, błędy rywala):")
-print("   OR oznacza mnożnik szansy na wygraną przy wzroście przewagi o 1 punkt procentowy (1 p.p.).")
-print(" • Dla zmiennej 'diff_blk_per_set':")
-print("   OR oznacza mnożnik szansy na wygraną przy wzroście przewagi o 1 blok na set.")
-print(" • Dla zmiennej 'number_of_sets':")
-print("   OR oznacza mnożnik szansy na wygraną przy rozegraniu każdego kolejnego seta.")
-# %%
+
+#%%
 # === WYKRES: Forest plot dla Odds Ratio z 95% CI (Model 1) ===
 plt.figure(figsize=(10, 6))
 
@@ -964,7 +822,7 @@ plt.figure(figsize=(10, 6))
 plot_df = coef_df.sort_values("Odds Ratio", ascending=True).copy()
 
 # Kolory: istotne (p<0.05) = niebieski (wygrana), nieistotne = szary
-WIN_COLOR = "#4C9BE8"  # niebieski — zgodny z paletą boxplotów
+WIN_COLOR  = "#4C9BE8"  # niebieski — zgodny z paletą boxplotów
 LOSS_COLOR = "#B0B0B0"  # szary — nieistotne
 colors = [WIN_COLOR if p < 0.05 else LOSS_COLOR for p in plot_df["p-value"]]
 
@@ -980,14 +838,13 @@ for i, (_, row) in enumerate(plot_df.iterrows()):
 plt.axvline(x=1, color="red", linestyle="--", linewidth=1.2, label="OR = 1 (brak efektu)")
 plt.yticks(list(y_pos), plot_df["Cecha"].values)
 plt.xlabel("Odds Ratio (OR) z 95% przedziałem ufności", fontsize=12)
-# Tytuł usunięty — podpis "Rys. 5. ..." idzie pod rysunkiem w pracy
 plt.legend(loc="lower right", fontsize=9)
 plt.grid(axis="x", linestyle="--", alpha=0.4)
 plt.tight_layout()
 plt.savefig(plot_path("modeling", "Rys5_forest_plot_OR_model1.png"), dpi=150, bbox_inches="tight")
 plt.show()
 
-# %% md
+#%% md
 # ## Walidacja LOSO i Permutation Importance — Model 1 (Random Forest)
 # 
 # Ta komórka wykonuje **dodatkową walidację i diagnostykę** dla Modelu 1 przy użyciu Random Forest (model nieliniowy, uzupełnienie dla regresji logistycznej):
@@ -1004,7 +861,7 @@ plt.show()
 # - Wyniki prezentowane są na wykresie słupkowym z 95% przedziałami ufności
 # 
 # **Cel:** Potwierdzenie stabilności modelu w czasie oraz identyfikacja, które cechy mają największy rzeczywisty wpływ na predykcje.
-# %%
+#%%
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import LeaveOneGroupOut
 
@@ -1045,7 +902,6 @@ summary_rf = pd.DataFrame(
 print(summary_rf.to_string())
 
 # Model dla Permutation Importance — trenowany na 80% danych, ewaluowany na 20%
-# (out-of-sample: model nie widzial danych testowych; PDP uzywa osobnego modelu na pelnych danych)
 rf_perm = RandomForestClassifier(n_estimators=200, max_depth=6, random_state=42)
 rf_perm.fit(X_tr1, y_tr1)
 
@@ -1081,13 +937,12 @@ plt.barh(
 )
 plt.gca().invert_yaxis()
 plt.xlabel("Spadek dokładności modelu po przetasowaniu cechy", fontsize=11)
-# Tytuł usunięty — podpis "Rys. 7. ..." idzie pod rysunkiem w pracy
 plt.grid(axis="x", linestyle="--", alpha=0.5)
 plt.tight_layout()
 plt.savefig(plot_path("modeling", "Rys7_permutation_importance.png"), dpi=300, bbox_inches="tight")
 plt.show()
 
-# %% md
+#%% md
 # ## Diagnostyka wizualna Modelu 1 na zbiorze testowym
 # 
 # Po walidacji liczbowej (LOSO, Permutation Importance) warto **zobaczyć** jak model radzi sobie na danych, których nie widział podczas treningu (20% wydzielone na początku). Ta komórka generuje trzy wykresy:
@@ -1106,16 +961,13 @@ plt.show()
 # - Jeżeli krzywa odchyla się od przekątnej, model jest źle skalibrowany (overconfidence lub underconfidence)
 # 
 # **Cel:** Ocena jakości predykcji Modelu 1 z trzech różnych perspektyw – dyskryminacji (ROC), dokładności (CM) i skalowania (kalibracja).
-# %%
+#%%
 # === DIAGNOSTYKA WIZUALNA MODELU 1 NA ZBIORZE TESTOWYM (ROC, CM, KALIBRACJA) ===
-print("\n" + "=" * 70)
-print("DIAGNOSTYKA WIZUALNA NA ZBIORZE TESTOWYM (20%)")
-print("=" * 70)
 
 from sklearn.calibration import calibration_curve
 from sklearn.metrics import roc_curve, auc
 
-model1_sk = trained_sk_models["Model 1 – Ekspercki"]
+model1_sk = trained_sk_models["Model 1 – Główny"]
 y_prob_sk = model1_sk.predict_proba(X_te1_s)[:, 1]
 y_pred_sk = model1_sk.predict(X_te1_s)
 
@@ -1154,28 +1006,25 @@ axes[2].set_title("(c) Krzywa kalibracji", fontsize=12, fontweight="bold", loc="
 axes[2].legend(loc="lower right")
 axes[2].set_facecolor("white")
 
-# fig.suptitle usunięty — podpis "Rys. 4. ..." idzie pod rysunkiem w pracy
 plt.tight_layout(pad=3.0)
 plt.savefig(plot_path("modeling", "Rys4_diagnostics.png"), dpi=150, bbox_inches="tight")
 plt.show()
 
-# %%
-
-# %% md
+#%% md
 # ## 6) Pogłębiona analiza Modelu 1
 # 
 # Model ekspercki traktujemy jako główny punkt odniesienia, dlatego niżej
 # sprawdzamy jego stabilność względem innych algorytmów, różnych kontekstów
 # meczu i obserwacji wpływowych.
 # 
-# %% md
+#%% md
 # ### 6.1. Porównanie z prostym modelem nieliniowym
 # 
 # Celem nie jest wybranie najlepszego algorytmu za wszelką cenę, tylko
 # sprawdzenie, czy interpretacje z regresji logistycznej nie załamują się
 # po przejściu do bardziej elastycznego modelu.
 # 
-# %%
+#%%
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import LeaveOneGroupOut, cross_val_score
 
@@ -1208,16 +1057,15 @@ for name, model in comp_models.items():
 print(pd.DataFrame(comparison_rows).round(4).to_string())
 print("\nPorównanie Logistic Regression vs Random Forest — LOSO (Leave-One-Season-Out).")
 
-# %% md
+#%% md
 # ### 6.2. Waga statystyk w różnych warunkach meczu
 # 
 # Porównujemy współczynniki osobno dla playoffów i sezonu zasadniczego oraz
 # dla tie-breaków i meczów kończących się w 3-4 setach.
 # 
-# %%
+#%%
 # Skalujemy proporcje tak samo jak w Tabeli 2 — dla spójności i czytelności wykresu
 SCALE_FEATS = ["diff_atk_eff", "diff_srv_eff", "diff_opp_errors_share"]
-
 
 def get_logit_coefs(df_in, feats):
     # Analiza opisowa — modele fitowane na pełnych podzbiorach (in-sample)
@@ -1238,7 +1086,7 @@ coefs_playoff = get_logit_coefs(df[df["is_playoff"] == 1], SET1_FEATURES)
 coefs_normal = get_logit_coefs(df[df["number_of_sets"] < 5], SET1_FEATURES)
 coefs_tiebreak = get_logit_coefs(df[df["number_of_sets"] == 5], SET1_FEATURES)
 
-# %%
+#%%
 fig, axes = plt.subplots(1, 2, figsize=(16, 6))
 
 comparisons = [
@@ -1251,27 +1099,22 @@ for ax, (title, c1, c2, colors) in zip(axes, comparisons):
     x = np.arange(len(features_plot))
     width = 0.35
 
-    ax.bar(x - width / 2, [c1[f] for f in features_plot], width, label=title.split(" vs ")[0], color=colors[0],
-           alpha=0.8)
-    ax.bar(x + width / 2, [c2[f] for f in features_plot], width, label=title.split(" vs ")[1], color=colors[1],
-           alpha=0.8)
+    ax.bar(x - width / 2, [c1[f] for f in features_plot], width, label=title.split(" vs ")[0], color=colors[0], alpha=0.8)
+    ax.bar(x + width / 2, [c2[f] for f in features_plot], width, label=title.split(" vs ")[1], color=colors[1], alpha=0.8)
     ax.set_xticks(x)
     ax.set_xticklabels(features_plot, rotation=45, ha="right", fontsize=8)
     ax.axhline(y=0, color="gray", linestyle="--", linewidth=0.8)
     ax.set_ylim(-0.8, 0.8)
     ax.set_ylabel("Współczynnik logitu (×100 dla proporcji)", fontsize=11)
-    # Tytuł usunięty — podpis pod rysunkiem w pracy
     ax.legend(fontsize=9)
 
-# fig.suptitle usunięty — podpis pod rysunkiem w pracy
 plt.tight_layout()
 plt.savefig(plot_path("eda", "wagi_kontekstowe.png"), dpi=150, bbox_inches="tight")
 plt.show()
 print("Uwaga: współczynniki dla diff_atk_eff, diff_srv_eff, diff_opp_errors_share są w skali ×100 (zmiana o 1 p.p.).")
 print("Pozostałe cechy w jednostkach naturalnych. Wykres pokazuje WZGLĘDNĄ zmianę wag między kontekstami.")
 
-
-# %%
+#%%
 def coefficient_shift_table(reference, compared, label):
     rows = []
     for feature in SET1_FEATURES:
@@ -1291,24 +1134,18 @@ def coefficient_shift_table(reference, compared, label):
 
 coefficient_shift_table(coefs_regular, coefs_playoff, "Playoff vs sezon zasadniczy")
 coefficient_shift_table(coefs_normal, coefs_tiebreak, "Tie-break vs mecze 3-4 setowe")
-print(
-    "\nUwaga: wspolczynniki dla diff_atk_eff, diff_srv_eff, diff_opp_errors_share sa w skali ×100 (zgodnie z Tabela 2).")
+print("\nUwaga: wspolczynniki dla diff_atk_eff, diff_srv_eff, diff_opp_errors_share sa w skali ×100 (zgodnie z Tabela 2).")
 
-# %% md
+#%% md
 # ### 6.3. Gdzie model myli się najczęściej
 # 
 # Ta sekcja zbiera błędy klasyfikacji i pokazuje najbardziej nietypowe mecze,
 # czyli takie, w których model był pewny, a wynik okazał się przeciwny.
 # 
-# %%
+#%%
 # === Analiza bledow na zbiorze testowym (z split_store) ===
-print("=" * 70)
-print("ANALIZA BLEDOW – GDZIE MODEL MYLI SIE NAJCZESCIEJ?")
-print("=" * 70)
-print("  (predykcje na zbiorze testowym, 20% danych)")
-print()
 
-model1_sk = trained_sk_models["Model 1 – Ekspercki"]
+model1_sk = trained_sk_models["Model 1 – Główny"]
 df_te = X_te1.copy()
 df_te["prob"] = model1_sk.predict_proba(X_te1_s)[:, 1]
 df_te["pred"] = model1_sk.predict(X_te1_s)
@@ -1335,30 +1172,21 @@ anomalies = (
     df_te[df_te["is_error"] == 1]
     .sort_values("prob", ascending=False)
     .head(10)
-    .loc[:, ["season", "team_A", "team_B", "number_of_sets", "prob", "pred", TARGET]]
+    .loc[:, ["season", "team_A", "team_B","number_of_sets", "prob", "pred", TARGET]]
     .copy()
 )
 anomalies["pred"] = anomalies["pred"].map({1: "Wygrana A", 0: "Przegrana A"})
 anomalies[TARGET] = anomalies[TARGET].map({1: "Wygrana A", 0: "Przegrana A"})
 print(anomalies.to_string())
 
-# %% md
+#%% md
 # ### 6.4. Stabilność czasowa i diagnostyka modelu
 # 
 # Sprawdzamy odporność modelu na zmianę sezonu, jakość kalibracji oraz wpływ
 # zmiennych kontekstowych na interpretację współczynników.
 # 
-# #### Endogeniczność zmiennej `number_of_sets`
 # 
-# Zmienna `number_of_sets` (liczba setów w meczu) może budzić obawy o endogeniczność,
-# ponieważ mecze tie-breakowe są z definicji dłuższe, a ich przebieg statystyczny może
-# się różnić od meczów 3–4 setowych. Aby zweryfikować, czy obecność tej zmiennej nie
-# zaburza estymacji pozostałych predyktorów, oszacowano model porównawczy **bez**
-# `number_of_sets` i porównano współczynniki (w skali ×100, zgodnie z Tabelą 2).
-# 
-# %%
-
-# %%
+#%%
 from sklearn.calibration import calibration_curve
 from sklearn.metrics import ConfusionMatrixDisplay, auc, confusion_matrix, roc_curve
 from sklearn.model_selection import LeaveOneGroupOut
@@ -1418,14 +1246,14 @@ fig, ax1 = plt.subplots(figsize=(10, 5))
 x = range(len(loso_df))
 width = 0.35
 
-bars_acc = ax1.bar([i - width / 2 for i in x], loso_df["accuracy"], width,
-                   color="#4C9BE8", edgecolor="black", linewidth=0.8, label="Accuracy")
+bars_acc = ax1.bar([i - width/2 for i in x], loso_df["accuracy"], width,
+                 color="#4C9BE8", edgecolor="black", linewidth=0.8, label="Accuracy")
 ax1.set_ylim(0.85, 1.0)
 ax1.tick_params(axis="y", labelcolor="#4C9BE8")
 
 ax2 = ax1.twinx()
-bars_auc = ax2.bar([i + width / 2 for i in x], loso_df["auc"], width,
-                   color="#E63946", edgecolor="black", linewidth=0.8, label="AUC")
+bars_auc = ax2.bar([i + width/2 for i in x], loso_df["auc"], width,
+                  color="#E63946", edgecolor="black", linewidth=0.8, label="AUC")
 ax2.set_ylim(0.85, 1.0)
 ax2.tick_params(axis="y", labelcolor="#E63946")
 
@@ -1438,7 +1266,6 @@ ax1.axhline(y=0.5, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
 
 # Legenda łączona
 from matplotlib.patches import Patch
-
 legend_elements = [Patch(facecolor="#4C9BE8", label="Accuracy"),
                    Patch(facecolor="#E63946", label="AUC")]
 ax1.legend(handles=legend_elements, loc="upper left", fontsize=10)
@@ -1450,7 +1277,7 @@ plt.tight_layout()
 plt.savefig(plot_path("modeling", "Rys_loso_per_season.png"), dpi=150, bbox_inches="tight")
 plt.show()
 
-# %%
+#%%
 # --- Endogeniczność: skalowanie ×100 (zgodnie z Tabelą 2) ---
 scale_feats = ["diff_atk_eff", "diff_srv_eff", "diff_opp_errors_share"]
 
@@ -1481,23 +1308,23 @@ for feature in SET1_NO_SETS:
 
 print(pd.DataFrame(endogeneity_rows).round(4).to_string())
 
-print("\n📌 Skala ×100 — współczynniki odpowiadają zmianie przewagi o 1 p.p. (zgodnie z Tabelą 2).")
+print("\n Skala ×100 — współczynniki odpowiadają zmianie przewagi o 1 p.p. (zgodnie z Tabelą 2).")
 
-# %% md
+#%% md
 # **Weryfikacja endogeniczności:** różnice we współczynnikach między modelem z `number_of_sets`
 # a bez niego są marginalne (największa różnica < 0.01 w skali ×100).
 # Brak istotnych zmian potwierdza, że endogeniczność zmiennej `number_of_sets`
 # nie zaburza estymacji głównych efektów.
 # 
-# %% md
+#%% md
 # ### 6.5. Obserwacje wpływowe
 # 
 # Powiązanie profili druzyn z win rate zostało pokazane wcześniej, bezpośrednio w sekcji EDA.
 # Ostatni krok diagnostyki w tej części to identyfikacja pojedynczych meczów
 # silnie wpływających na model.
 # 
-# %%
-logit_model1 = results_store["Model 1 – Ekspercki"]
+#%%
+logit_model1 = results_store["Model 1 – Główny"]
 X_eval, y_eval = prepare_xy(df, SET1_FEATURES)
 df_eval = df.loc[X_eval.index].copy()
 df_eval["prob"] = logit_model1.predict(sm.add_constant(X_eval))
@@ -1532,58 +1359,46 @@ try:
 except Exception as exc:
     print(pd.DataFrame({"Komunikat": [f"Nie mozna obliczyc Cook's Distance: {exc}"]}).to_string())
 
-# %% md
+#%% md
 # ### 6.6. Robustness check — kontrola siły przeciwnika
 # 
 # Krytyka: statystyki różnicowe (np. diff_atk_eff) mogą być wysokie nie dlatego, że drużyna A grała dobrze, ale dlatego że przeciwnik był słaby. Aby to sprawdzić, budujemy zmienną diff_strength = rolling win rate A − rolling win rate B, liczoną wyłącznie na meczach PRZED datą danego spotkania (brak data leakage). Następnie porównujemy współczynniki Modelu 1 bez i z tą kontrolą.
-# %%
-
-
+#%%
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
-
 # --- 1. Budowanie zmiennej diff_strength ---
-df["date"] = pd.to_datetime(df["date"], dayfirst=True)
+df["date"] = pd.to_datetime(df["date"], format="%Y-%m-%d")
 df = df.sort_values("date").reset_index(drop=True)
-
 # Rolling win rate drużyny A (jako gospodarz)
 wr_A = (
     df.groupby("team_A")["win_A"]
     .transform(lambda x: x.shift(1).expanding(min_periods=5).mean())
 )
-
 # Rolling win rate drużyny B (jako gość: wygrywa gdy win_A == 0)
 df["win_B"] = 1 - df["win_A"]
 wr_B = (
     df.groupby("team_B")["win_B"]
     .transform(lambda x: x.shift(1).expanding(min_periods=5).mean())
 )
-
 df["diff_strength"] = wr_A - wr_B
 df.drop(columns=["win_B"], inplace=True)
-
 n_missing = df["diff_strength"].isna().sum()
 print(f"Liczba meczów bez diff_strength (za mało historii): {n_missing} / {len(df)}")
 print(f"Pozostaje do analizy: {len(df) - n_missing} meczów\n")
-
 # --- 2. Model bazowy (SET1 bez kontroli) vs Model z diff_strength ---
 SCALE_FEATS_RC = ["diff_atk_eff", "diff_srv_eff", "diff_opp_errors_share"]
-
 # Podzbiór bez NaN w diff_strength
 df_rc = df.dropna(subset=["diff_strength"] + SET1_FEATURES).copy()
 df_rc[SCALE_FEATS_RC] = df_rc[SCALE_FEATS_RC] * 100
-
 # Model bazowy (tylko SET1, na tym samym podzbiorze)
 X_base = df_rc[SET1_FEATURES].copy()
 y_rc = df_rc["win_A"].astype(int)
 logit_base_rc = sm.Logit(y_rc, sm.add_constant(X_base)).fit(disp=0)
-
 # Model z kontrolą siły
 SET1_ROBUST = SET1_FEATURES + ["diff_strength"]
 X_robust = df_rc[SET1_ROBUST].copy()
 logit_robust = sm.Logit(y_rc, sm.add_constant(X_robust)).fit(disp=0)
-
 # --- 3. Tabela porównawcza współczynników ---
 robust_rows = []
 for feat in SET1_FEATURES:
@@ -1599,7 +1414,6 @@ for feat in SET1_FEATURES:
         "p (z diff_strength)": round(pval_robust, 4),
         "Δ Coef": round(coef_robust - coef_base, 4),
     })
-
 # diff_strength osobno
 robust_rows.append({
     "Cecha": "diff_strength",
@@ -1609,46 +1423,35 @@ robust_rows.append({
     "p (z diff_strength)": round(logit_robust.pvalues.get("diff_strength", np.nan), 4),
     "Δ Coef": "—",
 })
-
 robust_df = pd.DataFrame(robust_rows)
-
 print("=" * 90)
 print("ROBUSTNESS CHECK — wpływ kontroli siły przeciwnika na współczynniki Modelu 1")
 print("=" * 90)
 print("Zmienne procentowe (diff_atk_eff, diff_srv_eff, diff_opp_errors_share) w skali ×100.")
-print()
 # Drukowanie tabeli z separatorami dla czytelności
 header = f"{'Cecha':30s} {'Coef (bez)':>12s} {'p (bez)':>10s} {'Coef (z)':>12s} {'p (z)':>10s} {'Δ Coef':>10s}"
 sep = "-" * 90
 print(header)
 print(sep)
 for _, row in robust_df.iterrows():
-    print(
-        f"{row['Cecha']:30s} {str(row['Coef (bez kontroli)']):>12s} {str(row['p (bez kontroli)']):>10s} {str(row['Coef (z diff_strength)']):>12s} {str(row['p (z diff_strength)']):>10s} {str(row['Δ Coef']):>10s}")
-
+    print(f"{row['Cecha']:30s} {str(row['Coef (bez kontroli)']):>12s} {str(row['p (bez kontroli)']):>10s} {str(row['Coef (z diff_strength)']):>12s} {str(row['p (z diff_strength)']):>10s} {str(row['Δ Coef']):>10s}")
 # Podsumowanie
 max_delta = robust_df[robust_df["Δ Coef"] != "—"]["Δ Coef"].astype(float).abs().max()
 print(f"\nMaksymalna zmiana współczynnika po dodaniu diff_strength: {max_delta:.4f}")
-if max_delta < 0.05:
-    print("✅ Wnioski stabilne — kontrola siły przeciwnika nie zmienia interpretacji Modelu 1.")
-else:
-    print("⚠️  Wnioski częściowo wrażliwe — sprawdź konkretne cechy.")
-
 print(f"\ndiff_strength: coef = {logit_robust.params['diff_strength']:.4f}, "
       f"p = {logit_robust.pvalues['diff_strength']:.4f}")
-# %% md
-# Zmienna diff_strength okazała się nieistotna statystycznie (β = 0.73, p = 0.10), co sugeruje, że statystyki meczowe wchłaniają efekt jakości przeciwnika — drużyna o przewadze w skuteczności ataku czy zagrywce osiąga ją niezależnie od poziomu rywala. Maksymalna zmiana współczynników Modelu 1 po wprowadzeniu kontroli wyniosła Δ = 0.019 (dla zmiennej number_of_sets), co potwierdza pełną stabilność wniosków. Krytyka dotycząca braku kontroli siły przeciwnika nie podważa zatem interpretacji głównych wyników.
-# %% md
+
+#%% md
 # ## 7) Dodatkowe analizy
 # 
-# %% md
+#%% md
 # ### 7.1. PDP, LASSO i test Manna-Whitneya
 # 
 # Ponizsze analizy uzupelniaja glowna narracje Modelu 1.
 # PDP pokazuje ksztalt zaleznosci, LASSO potwierdza wybor cech,
 # a test Manna-Whitneya sprawdza czy rozklady cech roznia sie miedzy wygranymi a przegranymi.
 # 
-# %%
+#%%
 # Uwaga: logit_mod1_full jest trenowany na X_full_pct (pełne dane, z cechami ×100).
 # Dlatego X_mean i SD liczymy na tej samej skali, by predict() działał poprawnie.
 X_full_pct_for_mean = X_full.copy()
@@ -1678,11 +1481,8 @@ for feature in SET1_FEATURES:
 print(f"Bazowe P(win) przy srednich pozostalych cechach: {prob_base:.1%}")
 print(pd.DataFrame(marginal_rows).round(4).to_string())
 
-# %%
+#%%
 # === PDP 1D — wykresy zależności cząstkowej dla Modelu 1 ===
-print("=" * 70)
-print("PDP 1D — JAK ZMIANA CECHY WPŁYWA NA P(win)?")
-print("=" * 70)
 
 from sklearn.inspection import PartialDependenceDisplay
 
@@ -1720,12 +1520,27 @@ for ax in axes[:len(pdp_features)]:
 for i in range(len(pdp_features), len(axes)):
     axes[i].set_visible(False)
 
-# fig.suptitle usunięty — podpis pod rysunkiem w pracy
 plt.tight_layout()
 plt.savefig(plot_path("modeling", "RysX_pdp_model1.png"), dpi=300, bbox_inches="tight")
 plt.show()
 
-# %%
+#%%
+# === LASSO — ścieżka regularyzacji dla Modelu 1 ===
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import RobustScaler
+import numpy as np
+X_lasso, y_lasso = prepare_xy(df, SET1_FEATURES)
+scaler = RobustScaler()
+X_lasso_s = scaler.fit_transform(X_lasso)
+C_values = np.logspace(-2, 1, 50)
+coefs_list = []
+for C in C_values:
+    model = LogisticRegression(C=C, l1_ratio=1, solver="saga", max_iter=5000, random_state=42)
+    model.fit(X_lasso_s, y_lasso)
+    coefs_list.append(model.coef_[0])
+    coefs = np.array(coefs_list)
+
+#%%
 plt.figure(figsize=(12, 7))
 
 # Różne linie dla zmiennych efektywnościowych vs kontekstowych
@@ -1743,17 +1558,13 @@ plt.axhline(y=0, color="gray", linestyle="--", linewidth=0.8)
 plt.axvline(x=0.2812, linestyle="--", color="black", linewidth=1.2, label="C opt = 0,2812")
 plt.xlabel("C (im mniejsze C, tym silniejsza regularyzacja)", fontsize=12)
 plt.ylabel("Współczynnik (po skalowaniu RobustScaler)", fontsize=12)
-# Tytuł usunięty — podpis pod rysunkiem w pracy
 plt.legend(bbox_to_anchor=(1.01, 1), loc="upper left")
 plt.tight_layout()
 plt.savefig(plot_path("eda", "lasso_path_model1.png"), dpi=150, bbox_inches="tight")
 plt.show()
 
-# %%
+#%%
 # === Test Manna-Whitneya + FDR dla SET1 ===
-print("=" * 65)
-print("TEST MANNA-WHITNEYA (dla SET1) z korekta FDR")
-print("=" * 65)
 
 from scipy.stats import mannwhitneyu
 from statsmodels.stats.multitest import multipletests
@@ -1777,11 +1588,8 @@ mw_df["Istotny"] = ["***" if r else "" for r in reject]
 
 print(mw_df.to_string(index=False))
 
-# %%
+#%%
 # === PDP 2D — INTERAKCJE MIĘDZY ZMIENNYMI ===
-print("\n" + "=" * 70)
-print("PDP 2D — ANALIZA INTERAKCJI (ATAK vs PRZYJĘCIE oraz ATAK vs BŁĘDY RYWALA)")
-print("=" * 70)
 
 fig, axes = plt.subplots(1, 2, figsize=(16, 6))
 
@@ -1803,16 +1611,12 @@ PartialDependenceDisplay.from_estimator(
 )
 axes[1].set_title("(b) diff_atk_eff × diff_opp_errors_share", fontsize=11, loc="left")
 
-# fig.suptitle usunięty — podpis pod rysunkiem w pracy
 plt.tight_layout()
 plt.savefig(plot_path("modeling", "RysX_2d_pdp_interactions.png"), dpi=300, bbox_inches="tight")
 plt.show()
 
-# %%
+#%%
 # === TABELA: P(win) dla ekstremalnych kombinacji cech (interakcje 2D) ===
-print("\n" + "=" * 65)
-print("TABELA: P(win) dla ekstremalnych kombinacji cech (interakcje 2D)")
-print("=" * 65)
 
 percentiles = [10, 50, 90]
 pairs = [
@@ -1851,17 +1655,9 @@ for feat1, feat2, label in pairs:
         for j in range(3):
             row_str += f"  {probs[i][j]:.2%}"
         print(row_str)
-    print()
 
-# Wnioski
-print("\n📌 WNIOSKI Z TABELI INTERAKCJI:")
-print(" • Dominacja ataku: niezależnie od przyjęcia czy błędów rywala,")
-print("   słaby atak = niskie P(win), mocny atak = wysokie P(win).")
-print(" • Przy niskim i wysokim ataku druga cecha ma marginalne znaczenie.")
-print(" • Interakcja widoczna głównie w średnim zakresie ataku (P50),")
-print("   gdzie lepsze przyjęcie lub więcej błędów rywala podnosi P(win).")
 
-# %% md
+#%% md
 # ## 7.3. Analiza najgorzej sklasyfikowanych meczów
 # 
 # Poniżej trzy mecze, które Model Główny (regresja logistyczna) sklasyfikował z największym błędem –
@@ -1870,11 +1666,8 @@ print("   gdzie lepsze przyjęcie lub więcej błędów rywala podnosi P(win).")
 # wartości `diff_atk_eff` i `diff_blk_per_set`, ale nie uchwyca innych czynników (np. presja tie-breaka,
 # moment w sezonie, różnica siły drużyn w kluczowych momentach).
 # 
-# %%
+#%%
 # === Analiza najgorzej sklasyfikowanych meczów ===
-print("=" * 80)
-print("NAJGORZEJ SKLASYFIKOWANE MECZE PRZEZ MODEL GŁÓWNY")
-print("=" * 80)
 
 matches_data = [
     ("MKS Kalisz", "PTPS Piła", "2019/2020", 5, 0,
@@ -1894,14 +1687,9 @@ for row in matches_data:
     print(f"{ta:25s} {tb:25s} {seas:12s} {sets:5d} {prob:.3f}  {actual:5d}  {playoff:8d} | "
           f"{atk:>8.3f} {srv:>8.3f} {blk:>8.3f} {rec:>8.3f} {err:>8.3f}")
 
-print("\n📌 WNIOSKI:")
-print(" • We wszystkich trzech przypadkach model przewidział wygraną (P > 85%), ale drużyna A przegrała.")
-print(" • Wszystkie trzy mecze miały dodatnie diff_atk_eff i diff_blk_per_set, co silnie")
-print("   podbiło przewidywane prawdopodobieństwo.")
-print(" • Model nie uchwycił innych czynników wpływających na wynik (np. presja, forma dnia,")
-print("   zmęczenie, znaczenie meczu w kontekście sezonu).")
 
-# %%
+
+#%%
 # ============================================================
 # UZUPEŁNIENIE TABELI 8 — dokładne N i liczba błędów per kontekst
 # ============================================================
@@ -1917,83 +1705,25 @@ results = pd.DataFrame({
 })
 results['error'] = (results['y_true'] != results['y_pred']).astype(int)
 
-print("=" * 60)
 print("TABELA 8 — DOKŁADNE N I LICZBA BŁĘDÓW PER KONTEKST")
-print("=" * 60)
 
 # --- Ogółem ---
 n_total = len(results)
 err_total = results['error'].sum()
-print(f"\nOgółem:             N={n_total},  błędy={err_total},  wskaźnik={err_total / n_total * 100:.2f}%")
+print(f"\nOgółem:             N={n_total},  błędy={err_total},  wskaźnik={err_total/n_total*100:.2f}%")
 
 # --- Sezon zasadniczy vs Playoff ---
 for label, val in [("Sezon zasadniczy", 0), ("Playoff", 1)]:
     sub = results[results['is_playoff'] == val]
     n = len(sub)
     err = sub['error'].sum()
-    print(f"{label}:  N={n},  błędy={err},  wskaźnik={err / n * 100:.2f}%")
+    print(f"{label}:  N={n},  błędy={err},  wskaźnik={err/n*100:.2f}%")
 
 # --- Mecze 3-4-setowe vs Tie-breaki ---
 sub_short = results[results['number_of_sets'] < 5]
-sub_tb = results[results['number_of_sets'] == 5]
+sub_tb    = results[results['number_of_sets'] == 5]
 
 for label, sub in [("Mecze 3-4-setowe", sub_short), ("Tie-breaki (5 setów)", sub_tb)]:
     n = len(sub)
     err = sub['error'].sum()
-    print(f"{label}:  N={n},  błędy={err},  wskaźnik={err / n * 100:.2f}%")
-
-# %% md
-# ## 8) Podsumowanie i wnioski
-# 
-# Poniżej zestawienie najważniejszych wyników analizy wpływu statystyk meczowych na wynik spotkania.
-# 
-# **Zastrzeżenie:** Celem niniejszej pracy **nie jest** zbudowanie modelu predykcyjnego, który przewidywałby
-# wynik meczu przed jego rozpoczęciem. Jest to analiza *ex post* — badamy, które statystyki meczowe są
-# najsilniej związane z wynikiem *po* rozegraniu spotkania. Modele statystyczne (regresja logistyczna,
-# lasy losowe itp.) służą tu jako narzędzia do **pomiaru siły i kierunku związku** między statystykami
-# a wynikiem, a nie jako predyktory. Wnioski mają charakter **korelacyjny, nie przyczynowy**.
-# 
-# Ograniczenia interpretacyjne wynikające z charakteru danych są omówione w sekcji 8.2.
-# %% md
-# ### 8.1. Ograniczenia i sposób interpretacji
-# 
-# Poniższe punkty porządkują najważniejsze ograniczenia oraz wskazówki interpretacyjne dla całej analizy.
-# 
-# %% md
-# ### 8.2. Ograniczenia interpretacyjne
-# 
-# Wyniki analizy należy interpretować w świetle następujących ograniczeń:
-# 
-# 1. **Korelacja ≠ przyczynowość.** Silny związek między statystyką a wynikiem nie oznacza,
-#    że zmiana tej statystyki *spowoduje* wygraną. Może działać odwrotna przyczynowość:
-#    prowadzenie w meczu może ułatwiać osiąganie lepszych statystyk (drużyna prowadząca
-#    gra swobodniej, ryzykuje więcej w ataku).
-# 
-# 2. **Brak zmiennych ukrytych.** Analiza obejmuje tylko statystyki meczowe. Nie uwzględniamy:
-#    formy zawodniczek, kontuzji, znaczenia meczu (presja), zmęczenia podróżą, zmian trenera,
-#    atmosfery w zespole — wszystkich czynników, które mogą wpływać zarówno na statystyki,
-#    jak i na wynik.
-# 
-# 3. **Agregacja do poziomu meczu.** Statystyki sumaryczne (np. skuteczność ataku w całym meczu)
-#    tracą informację o przebiegu spotkania. Kluczowe zagrania w końcówkach setów mogą mieć
-#    większe znaczenie niż sugerują zagregowane wartości.
-# 
-# 4. **Współliniowość statystyk.** Mimo selekcji cech, statystyki siatkarskie są ze sobą
-#    powiązane (np. dobre przyjęcie ułatwia skuteczny atak). Modele statystyczne rozdzielają
-#    te efekty tylko częściowo.
-# 
-# 5. **Stabilność w czasie.** Jak pokazano w sekcji 6.4, ranking ważności cech może się
-#    różnić między sezonami. Wnioski oparte na całym zbiorze danych mogą nie być w pełni
-#    aktualne dla konkretnego sezonu.
-# 
-# 6. **Bilans klas.** Zbiór danych jest w przybliżeniu zbalansowany (ok. 50% wygranych gospodyń),
-#    ale dotyczy tylko TAURON Ligi. Generalizacja na inne ligi lub poziomy rozgrywkowe
-#    wymaga ostrożności.
-# %% md
-# ### 8.3. Jak interpretować wyniki modeli
-# 
-# - Analiza ma charakter *ex post*: modele opisują siłę związku między statystykami meczowymi a wynikiem, a nie służą do prognozowania przed meczem.
-# - Najważniejsze tabele i wykresy warto czytać łącznie: współczynniki logitu pokazują kierunek wpływu, walidacja mówi o stabilności, a PDP i LASSO pomagają ocenić odporność wniosków na wybór narzędzia.
-# - `number_of_sets` i `is_playoff` traktujemy przede wszystkim jako zmienne kontekstowe lub kontrolne, nawet jeśli w niektórych testach jednowymiarowych są słabsze od cech stricte wydajnościowych.
-# - Szczególną ostrożność trzeba zachować przy interpretacji statystyk silnie powiązanych z przebiegiem meczu, takich jak `diff_atk_eff` czy `diff_blk_per_set`, bo mogą one częściowo odzwierciedlać także efekt prowadzenia w spotkaniu.
-# 
+    print(f"{label}:  N={n},  błędy={err},  wskaźnik={err/n*100:.2f}%")
