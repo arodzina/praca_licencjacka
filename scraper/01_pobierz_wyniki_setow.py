@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-01_scrape_scoreboard_only.py
+01_pobierz_wyniki_setow.py
 
-- Czyta game_id ze starego pliku (separator ;), np. tauron_liga_statystyki.csv
-- Scrape’uje scoreboard (punkty w setach + suma) ze strony meczu
-- Dopisuje do istniejącego pliku wynikowego (separator ,) i robi RESUME:
-  nie pobiera ponownie ID, które już są w OUT_CSV.
+Scrapes per-set points and total scoreboard points for matches
+listed in an existing CSV file and appends them to an output CSV.
 
-Uwaga:
-- OUT_CSV zapisuje z PRZECINKAMI (,)
-- IN_CSV może być ze średnikami (;), bo taki masz.
+Usage:
+    python scraper/01_pobierz_wyniki_setow.py
 """
 
 import csv
@@ -21,24 +18,25 @@ import requests
 from bs4 import BeautifulSoup
 
 BASE_URL = "https://www.tauronliga.pl"
-HEADERS  = {"User-Agent": "Mozilla/5.0 (compatible; academic-research/1.0)"}
-DELAY    = 1.0
+HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; academic-research/1.0)"}
+DELAY = 1.0
 
-IN_CSV   = "data/tauron_liga_statystyki.csv"   # stary plik (u Ciebie ; )
-OUT_CSV  = "scoreboard_update.csv"        # nowy plik (z przecinkami)
+IN_CSV = "data/tauron_liga_statystyki.csv"
+OUT_CSV = "scoreboard_update.csv"
 
 SCORE_FIELDS = [
     "game_id",
-    "A_set1_points","B_set1_points",
-    "A_set2_points","B_set2_points",
-    "A_set3_points","B_set3_points",
-    "A_set4_points","B_set4_points",
-    "A_set5_points","B_set5_points",
-    "A_scoreboard_points","B_scoreboard_points",
+    "A_set1_points", "B_set1_points",
+    "A_set2_points", "B_set2_points",
+    "A_set3_points", "B_set3_points",
+    "A_set4_points", "B_set4_points",
+    "A_set5_points", "B_set5_points",
+    "A_scoreboard_points", "B_scoreboard_points",
 ]
 
+
 def extract_set_scores_from_html(soup: BeautifulSoup):
-    """Zwraca listę par [(A,B), ...] z tabeli przebiegu (kolumna Punkty)."""
+    """Extract per-set point pairs [(A, B), ...] from the match progress table."""
     def parse_pair(txt: str):
         m = re.search(r"(\d{1,2})\s*:\s*(\d{1,2})", txt)
         if not m:
@@ -75,17 +73,12 @@ def extract_set_scores_from_html(soup: BeautifulSoup):
 
         if pairs:
             return pairs
-
     return []
 
-def scores_to_fields(pairs):
-    out = {k: "" for k in SCORE_FIELDS if k != "game_id"}
-    for i in range(1, 6):
-        out[f"A_set{i}_points"] = ""
-        out[f"B_set{i}_points"] = ""
-    out["A_scoreboard_points"] = ""
-    out["B_scoreboard_points"] = ""
 
+def scores_to_fields(pairs):
+    """Convert a list of set score pairs into a flat dictionary of SCORE_FIELDS."""
+    out = {k: "" for k in SCORE_FIELDS if k != "game_id"}
     if not pairs:
         return out
 
@@ -96,20 +89,21 @@ def scores_to_fields(pairs):
     out["B_scoreboard_points"] = sum(b for _, b in pairs)
     return out
 
-def load_game_ids_from_old_csv(path: str):
+
+def load_game_ids(path: str):
+    """Load all game_id values from a CSV file."""
     ids = []
     with open(path, "r", encoding="utf-8-sig", newline="") as f:
-        r = csv.DictReader(f, delimiter=";")  # <-- u Ciebie stary plik jest na ;
+        r = csv.DictReader(f, delimiter=";")
         for row in r:
             gid = (row.get("game_id") or "").strip()
             if gid:
                 ids.append(gid)
-    # unikat + sort
-    ids = sorted(set(ids), key=lambda x: int(x))
-    return ids
+    return sorted(set(ids), key=lambda x: int(x))
 
-def load_done_ids_from_out_csv(path: str):
-    """OUT ma przecinki, więc delimiter=','."""
+
+def load_done_ids(path: str):
+    """Load game_id values already present in the output file (for resume)."""
     done = set()
     if not os.path.exists(path):
         return done
@@ -121,33 +115,26 @@ def load_done_ids_from_out_csv(path: str):
                 done.add(gid)
     return done
 
-def main():
-    ids = load_game_ids_from_old_csv(IN_CSV)
-    print("ID do zrobienia (w starym pliku):", len(ids))
 
-    done = load_done_ids_from_out_csv(OUT_CSV)
-    if done:
-        print("Już zapisane w OUT_CSV (resume):", len(done))
+def main():
+    ids = load_game_ids(IN_CSV)
+    done = load_done_ids(OUT_CSV)
+    remaining = [gid for gid in ids if gid not in done]
 
     file_exists = os.path.exists(OUT_CSV)
 
-    # dopisujemy do pliku (append)
     with open(OUT_CSV, "a", newline="", encoding="utf-8-sig") as f_out:
         w = csv.DictWriter(f_out, fieldnames=SCORE_FIELDS, delimiter=";")
         if not file_exists:
             w.writeheader()
 
-        left = [gid for gid in ids if gid not in done]
-        print("Pozostało do zrobienia:", len(left))
-
-        for i, gid in enumerate(left, 1):
-            url = f"{BASE_URL}/games/action/show/id/{gid}.html"  # bez tour też działa
+        for i, gid in enumerate(remaining, 1):
+            url = f"{BASE_URL}/games/action/show/id/{gid}.html"
             row = {"game_id": gid}
 
             try:
                 resp = requests.get(url, headers=HEADERS, timeout=30)
                 if resp.status_code != 200:
-                    print(f"{i}/{len(left)} ID={gid} HTTP {resp.status_code}")
                     w.writerow(row)
                     time.sleep(DELAY)
                     continue
@@ -157,18 +144,13 @@ def main():
                 row.update(scores_to_fields(pairs))
                 w.writerow(row)
 
-                if row.get("A_scoreboard_points") != "":
-                    print(f"{i}/{len(left)} ID={gid} SB {row['A_scoreboard_points']}:{row['B_scoreboard_points']}")
-                else:
-                    print(f"{i}/{len(left)} ID={gid} brak scoreboard")
-
-            except Exception as e:
-                print(f"{i}/{len(left)} ID={gid} EXC {e}")
+            except Exception:
                 w.writerow(row)
 
             time.sleep(DELAY)
 
-    print("Gotowe. Wynik w:", OUT_CSV)
+    print(f"Done. {len(remaining)} matches processed → {OUT_CSV}")
+
 
 if __name__ == "__main__":
     main()

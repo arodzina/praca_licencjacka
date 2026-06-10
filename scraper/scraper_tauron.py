@@ -1,37 +1,34 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-============================================================
-Skrypt do pobierania statystyk TAURON Ligi Kobiet
-Praca licencjacka — zbieranie danych meczowych
+====================================================================
+TAURON Liga Kobiet — data scraper
+====================================================================
 
-v2 — obsługa PDF + fallback na HTML
+Downloads match statistics from the TAURON Liga website.
 
-UPDATE (scoreboard + sety):
-- punkty w setach + sumy scoreboard:
-  * A_set1_points ... A_set5_points
-  * B_set1_points ... B_set5_points
-  * A_scoreboard_points, B_scoreboard_points
-- zamiast match_type:
-  * sets_played = sety_A + sety_B
+Data sources (tried in order):
+  1. PDF match report (complete statistics + scoreboard)
+  2. HTML tables (full statistics when available)
+  3. HTML scoreboard only (fallback when tables are missing)
 
-UPDATE (stabilny CSV):
-- stała kolejność kolumn: FIELDNAMES
-- dopełnianie brakujących pól: row.setdefault(...)
+Output: CSV with columns defined in FIELDNAMES.
+Supports incremental scraping (resume).
 
-UPDATE (fallback):
-- PDF jest źródłem nr 1
-- gdy PDF nie ma/nie da się sparsować:
-  1) próbuj pełnych statystyk z HTML (parsuj_html)
-  2) jeśli brak tabel w HTML -> scoreboard-only (parsuj_html_scoreboard_only)
-
-Użycie:
-  1. pip install requests beautifulsoup4 pdfplumber
-  2. python scraper_tauron.py
-============================================================
+Usage:
+    pip install requests beautifulsoup4 pdfplumber
+    python scraper_tauron.py
+====================================================================
 """
 
-import requests, re, time, csv, io, sys, os
+import requests
+import re
+import time
+import csv
+import io
+import sys
+import os
+
 
 def install(pkg):
     import subprocess
@@ -43,42 +40,49 @@ for pkg, imp in [("requests", "requests"), ("beautifulsoup4", "bs4"), ("pdfplumb
     try:
         __import__(imp)
     except ImportError:
-        print(f"Instalowanie {pkg}...")
+        print(f"Installing {pkg}...")
         install(pkg)
 
 import pdfplumber
 from bs4 import BeautifulSoup
 
-SEZONY = {
+SEASONS = {
+    "2015/2016": 24,
+    "2016/2017": 26,
+    "2017/2018": 28,
+    "2018/2019": 30,
+    "2019/2020": 33,
+    "2020/2021": 36,
+    "2021/2022": 39,
+    "2022/2023": 42,
+    "2023/2024": 45,
+    "2024/2025": 48,
     "2025/2026": 50,
 }
 
-BASE_URL   = "https://www.tauronliga.pl"
-DELAY      = 1.0
-OUTPUT_CSV = "data/tauron_liga_statystyki_2025_2026.csv"
-HEADERS    = {"User-Agent": "Mozilla/5.0 (compatible; academic-research/1.0)"}
+BASE_URL = "https://www.tauronliga.pl"
+DELAY = 1.0
+OUTPUT_CSV = "data/tauron_liga_statystyki.csv"
+HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; academic-research/1.0)"}
 
 STAT_COLS = [
-    "pts_suma","pts_bp","pts_bilans",
-    "srv_suma","srv_bledy","srv_asy",
-    "rec_suma","rec_bledy","rec_poz_pct","rec_perf_pct",
-    "atk_suma","atk_bledy","atk_blok","atk_pkt","atk_skut_pct",
+    "pts_suma", "pts_bp", "pts_bilans",
+    "srv_suma", "srv_bledy", "srv_asy",
+    "rec_suma", "rec_bledy", "rec_poz_pct", "rec_perf_pct",
+    "atk_suma", "atk_bledy", "atk_blok", "atk_pkt", "atk_skut_pct",
     "blk_pkt",
 ]
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Stała kolejność kolumn w CSV (żeby nic się nie przesuwało)
-# ─────────────────────────────────────────────────────────────────────────────
 BASE_FIELDS = [
-    "game_id","sezon","source",
-    "druzyna_A","druzyna_B",
-    "sety_A","sety_B","sets_played","wygrana_A",
-    "A_set1_points","B_set1_points",
-    "A_set2_points","B_set2_points",
-    "A_set3_points","B_set3_points",
-    "A_set4_points","B_set4_points",
-    "A_set5_points","B_set5_points",
-    "A_scoreboard_points","B_scoreboard_points",
+    "game_id", "sezon", "source",
+    "druzyna_A", "druzyna_B",
+    "sety_A", "sety_B", "sets_played", "wygrana_A",
+    "A_set1_points", "B_set1_points",
+    "A_set2_points", "B_set2_points",
+    "A_set3_points", "B_set3_points",
+    "A_set4_points", "B_set4_points",
+    "A_set5_points", "B_set5_points",
+    "A_scoreboard_points", "B_scoreboard_points",
 ]
 
 STAT_FIELDS = []
@@ -90,8 +94,9 @@ for k in STAT_COLS:
 
 FIELDNAMES = BASE_FIELDS + STAT_FIELDS
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Scoreboard helpers (punkty w setach)
+# Scoreboard helpers
 # ─────────────────────────────────────────────────────────────────────────────
 def _set_scores_to_row_fields(set_scores):
     out = {}
@@ -110,17 +115,15 @@ def _set_scores_to_row_fields(set_scores):
     out["B_scoreboard_points"] = sum(b for _, b in set_scores)
     return out
 
+
 def _extract_set_scores_from_html(soup: BeautifulSoup):
-    """
-    Tabela 'Przebieg meczu':
-    - 'Punkty' = wynik punktowy seta (np. 25 : 22) ✅
-    - 'Wynik'  = stan setów (np. 2 : 0)           ❌
-    """
+    """Extract per-set point scores from the 'Przebieg meczu' table."""
     def parse_pair(text: str):
         m = re.search(r"(\d{1,2})\s*:\s*(\d{1,2})", text)
         if not m:
             return None
-        a = int(m.group(1)); b = int(m.group(2))
+        a = int(m.group(1))
+        b = int(m.group(2))
         if a < 10 and b < 10:
             return None
         return (a, b)
@@ -155,14 +158,11 @@ def _extract_set_scores_from_html(soup: BeautifulSoup):
 
         if pairs:
             return pairs
-
     return []
 
+
 def _find_main_game_node(soup: BeautifulSoup, game_id):
-    """
-    Na stronie meczu bywa dużo innych boxów z listy spotkań.
-    Szukamy kontenera aktualnego meczu po data-game-id, żeby nie mieszać scoreboardów.
-    """
+    """Find the container for the current match by data-game-id."""
     selectors = [
         f'.ajax-synced-games[data-game-id="{game_id}"]',
         f'[data-game-id="{game_id}"]',
@@ -173,11 +173,9 @@ def _find_main_game_node(soup: BeautifulSoup, game_id):
             return node
     return soup
 
+
 def _extract_set_scores_from_scoreboard_box(soup: BeautifulSoup, game_id):
-    """
-    Fallback dla nowszych stron: punkty setowe są w boxie meczu jako span-y
-    data-synced-games-content="set1pointsTeamA" itd., nawet gdy brak tabeli przebiegu.
-    """
+    """Fallback: extract set scores from scoreboard spans."""
     root = _find_main_game_node(soup, game_id)
     pairs = []
 
@@ -198,23 +196,20 @@ def _extract_set_scores_from_scoreboard_box(soup: BeautifulSoup, game_id):
 
         a = int(a_txt)
         b = int(b_txt)
-
-        # Puste niegrane sety bywają renderowane jako 0:0.
         if a == 0 and b == 0:
             continue
-
         pairs.append((a, b))
 
     return pairs
 
+
 def _extract_teams_from_match_box(soup: BeautifulSoup, game_id):
-    """
-    Dla stron z widgetami volleystation nazwy drużyn są w subtitle i game-team.
-    To jest stabilniejsze niż parsowanie <title>.
-    """
+    """Extract team names from the match widget."""
     root = _find_main_game_node(soup, game_id)
 
-    subtitle = soup.select_one(f'.subtitle.ajax-synced-games[data-game-id="{game_id}"]')
+    subtitle = soup.select_one(
+        f'.subtitle.ajax-synced-games[data-game-id="{game_id}"]'
+    )
     if subtitle:
         vs = subtitle.find("small", class_="vs")
         if vs:
@@ -230,14 +225,20 @@ def _extract_teams_from_match_box(soup: BeautifulSoup, game_id):
     if left and right:
         return left.get_text(" ", strip=True), right.get_text(" ", strip=True)
 
-    title = soup.find("title").get_text(" ", strip=True) if soup.find("title") else ""
-    m = re.search(r"^(.*?)\s+vs\s+(.*?)\s+-", title, flags=re.IGNORECASE)
-    if m:
-        return m.group(1).strip(), m.group(2).strip()
+    title = soup.find("title")
+    if title:
+        m = re.search(
+            r"^(.*?)\s+vs\s+(.*?)\s+-", title.get_text(" ", strip=True),
+            flags=re.IGNORECASE
+        )
+        if m:
+            return m.group(1).strip(), m.group(2).strip()
 
     return "DruzynaA", "DruzynaB"
 
+
 def _extract_sets_from_scoreboard_box(soup: BeautifulSoup, game_id):
+    """Extract set scores (e.g., 3:0) from the scoreboard."""
     root = _find_main_game_node(soup, game_id)
     scores = root.select(".game-score")
     if len(scores) < 2:
@@ -252,11 +253,11 @@ def _extract_sets_from_scoreboard_box(soup: BeautifulSoup, game_id):
     b = int(b_txt)
     if max(a, b) == 3 and (a + b) in (3, 4, 5):
         return a, b
-
     return None, None
 
+
 def _extract_sets_from_progress_table(soup: BeautifulSoup):
-    """Zwraca (setyA, setyB) z tabeli przebiegu (kolumna 'Wynik', np. 3 : 0)."""
+    """Extract set wins (e.g., 3:0) from the progress table."""
     for tbl in soup.find_all("table"):
         headers = [th.get_text(" ", strip=True).lower() for th in tbl.find_all("th")]
         if not headers:
@@ -295,47 +296,47 @@ def _extract_sets_from_progress_table(soup: BeautifulSoup):
                         a, b = int(m.group(1)), int(m.group(2))
                         if max(a, b) == 3 and (a + b) in (3, 4, 5):
                             return a, b
-
     return None, None
 
-# ─────────────────────────────────────────────────────────────────────────────
-# KROK 1 — lista ID meczów
-# ─────────────────────────────────────────────────────────────────────────────
-def pobierz_id_meczow(tour_id, sezon):
-    url = f"{BASE_URL}/games/tour/{tour_id}.html"
-    print(f"\n{'='*60}\nSezon {sezon}  (tour {tour_id})\n{'='*60}")
-    resp = requests.get(url, headers=HEADERS, timeout=30)
-    resp.raise_for_status()
-    # Szukamy ID meczów — najpierw z /tour/, potem bez (nowsze strony)
-    ids = sorted(set(re.findall(rf'/games/action/show/id/(\d+)/tour/{tour_id}', resp.text)))
-    if not ids:
-        # Fallback: nowsze strony nie mają /tour/ w linkach
-        ids = sorted(set(re.findall(r'/games/action/show/id/(\d+)\.html', resp.text)))
-        # Filtrujemy tylko ID z tego sezonu (opcjonalne, ale bezpieczne)
-    print(f"Znaleziono {len(ids)} ID meczów.")
-    return ids
 
 # ─────────────────────────────────────────────────────────────────────────────
-# KROK 2a — parsowanie PDF (pełne staty + scoreboard)
+# Step 1 — get match IDs for a season
 # ─────────────────────────────────────────────────────────────────────────────
-def parsuj_pdf(pdf_bytes, game_id, sezon):
+def get_match_ids(tour_id, season):
+    """Fetch all game IDs for a given tour/season from the TAURON Liga website."""
+    url = f"{BASE_URL}/games/tour/{tour_id}.html"
+    resp = requests.get(url, headers=HEADERS, timeout=30)
+    resp.raise_for_status()
+
+    ids = sorted(set(
+        re.findall(rf'/games/action/show/id/(\d+)/tour/{tour_id}', resp.text)
+    ))
+    if not ids:
+        ids = sorted(set(
+            re.findall(r'/games/action/show/id/(\d+)\.html', resp.text)
+        ))
+    return ids
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 2a — parse PDF match report
+# ─────────────────────────────────────────────────────────────────────────────
+def parse_pdf(pdf_bytes, game_id, season):
+    """Parse full match statistics from a PDF match report."""
     try:
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             text = "\n".join(p.extract_text() or "" for p in pdf.pages)
     except Exception as e:
         return None, f"PDF read error: {e}"
 
-    # Jeśli PDF jest obrazem (brak warstwy tekstowej) -> nie parsujemy tutaj
     if not text.strip():
-        return None, "PDF bez warstwy tekstowej (extract_text pusty)"
+        return None, "PDF without text layer"
 
-    # Normalizacje:
     text = text.replace("–", "-").replace("−", "-")
     text = re.sub(r"(?<=\s)\.(?=\s)", "0", text)
-
     lines = [l.strip() for l in text.splitlines() if l.strip()]
 
-    # ── Drużyny + sety ───────────────────────────────────────────────────────
+    # Teams and set scores
     team1 = team2 = sets1 = sets2 = None
     for line in lines[:50]:
         m = re.match(r"^(.+?)\s+(\d)\s+(\d)\s+(.+)$", line)
@@ -346,19 +347,18 @@ def parsuj_pdf(pdf_bytes, game_id, sezon):
             team2 = m.group(4).strip()
             break
     if team1 is None:
-        return None, "brak wyniku (setów) w PDF"
+        return None, "no set scores in PDF"
 
     n_sets = sets1 + sets2
 
-    # ── Scoreboard per set (odporny na sklejone linie) ───────────────────────
-    set_scores_map = {}  # {set_no: (a,b)}
+    # Per-set scores
+    set_scores_map = {}
     for l in lines:
         m = re.search(r"\b([1-5])\s+(\d{1,2}:\d{2})\b(.*)$", l)
         if not m:
             continue
         set_no = int(m.group(1))
         tail = m.group(3)
-
         pairs = re.findall(r"(\d{1,2})\s*-\s*(\d{1,2})", tail)
         if not pairs:
             continue
@@ -374,9 +374,10 @@ def parsuj_pdf(pdf_bytes, game_id, sezon):
             break
         set_scores.append(set_scores_map[sn])
 
-    # ── Totalsy drużyn ───────────────────────────────────────────────────────
+    # Team totals
     pattern = (
-        r"(?:Players\s+total|Suma\s+zawodnika|Team\s+total|Suma\s+drużyny|Suma\s+druzyny|Totals?)\s+"
+        r"(?:Players\s+total|Suma\s+zawodnika|Team\s+total|"
+        r"Suma\s+druży ny|Suma\s+druzyny|Totals?)\s+"
         r"(\d+)\s+(\d+)\s+([+-]?\d+)\s+"
         r"(\d+)\s+(\d+)\s+(\d+)\s+"
         r"(\d+)\s+(\d+)\s+(\d+)%\s*\((\d+)%\)\s+"
@@ -385,7 +386,7 @@ def parsuj_pdf(pdf_bytes, game_id, sezon):
     )
     totals = re.findall(pattern, text, flags=re.IGNORECASE)
     if len(totals) < 2:
-        return None, "brak 2x Players total / Suma zawodnika"
+        return None, "missing 2x Players total / Suma zawodnika"
 
     def tuple_to_stats(t):
         return {
@@ -412,7 +413,7 @@ def parsuj_pdf(pdf_bytes, game_id, sezon):
 
     return _build_rows(
         game_id=game_id,
-        sezon=sezon,
+        season=season,
         team1=team1,
         team2=team2,
         sets1=sets1,
@@ -423,13 +424,15 @@ def parsuj_pdf(pdf_bytes, game_id, sezon):
         set_scores=set_scores,
     ), None
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# KROK 2b — parsowanie HTML pełne (jeśli są statyczne tabele)
+# Step 2b — parse full HTML match page
 # ─────────────────────────────────────────────────────────────────────────────
 def _safe_int(s):
     if s is None:
         return 0
-    s = s.strip().replace('%','').replace('+','').replace('\xa0','').replace(' ','')
+    s = s.strip().replace('%', '').replace('+', '') \
+         .replace('\xa0', '').replace(' ', '')
     if s in ('', '-', '*', '–', '−'):
         return 0
     try:
@@ -440,14 +443,18 @@ def _safe_int(s):
         except ValueError:
             return 0
 
-def parsuj_html(html, game_id, sezon):
+
+def parse_html(html, game_id, season):
+    """Parse full match statistics from HTML tables."""
     soup = BeautifulSoup(html, "html.parser")
     page_text = soup.get_text()
 
-    walkover_markers = ["walkower", "walk over", "w.o.", "walkover",
-                        "mecz nie odbył", "brak statystyk", "no stats"]
+    walkover_markers = [
+        "walkower", "walk over", "w.o.", "walkover",
+        "mecz nie odbył", "brak statystyk", "no stats"
+    ]
     if any(m in page_text.lower() for m in walkover_markers):
-        return None, "walkower/brak statystyk"
+        return None, "walkover / no statistics"
 
     has_stat_tables = any(
         "Suma" in [th.get_text(strip=True) for th in t.find_all("th")]
@@ -455,10 +462,9 @@ def parsuj_html(html, game_id, sezon):
         for t in soup.find_all("table")
     )
     if not has_stat_tables:
-        snippet = " ".join(page_text.split())[:200]
-        return None, f"brak tabel statystyk — strona: {snippet!r}"
+        return None, "no statistics tables in HTML"
 
-    # wynik setów
+    # Set scores
     sets1 = sets2 = None
     score_block = soup.find("div", class_=re.compile(r"result|score|wynik", re.I))
     score_text = score_block.get_text() if score_block else page_text
@@ -481,7 +487,7 @@ def parsuj_html(html, game_id, sezon):
         sets1, sets2 = _extract_sets_from_progress_table(soup)
 
     if sets1 is None:
-        return None, "brak wyniku w HTML (tabele są, ale nie znaleziono wyniku)"
+        return None, "no set scores in HTML"
 
     n_sets = sets1 + sets2
     set_scores_all = _extract_set_scores_from_html(soup)
@@ -489,28 +495,21 @@ def parsuj_html(html, game_id, sezon):
         set_scores_all = _extract_set_scores_from_scoreboard_box(soup, game_id)
     set_scores = set_scores_all[:n_sets] if len(set_scores_all) >= n_sets else None
 
-    # nazwy drużyn
+    # Team names
     h3s = [h.get_text(strip=True) for h in soup.find_all("h3") if h.get_text(strip=True)]
-    team_names = [n for n in h3s if len(n) > 3
-                  and "Statystyki" not in n and "Legenda" not in n
-                  and "Przebieg" not in n and "Szczeg" not in n]
+    team_names = [
+        n for n in h3s
+        if len(n) > 3 and "Statystyki" not in n and "Legenda" not in n
+        and "Przebieg" not in n and "Szczeg" not in n
+    ]
 
     STAT_RIDX = {
-        "pts_suma":  -21,
-        "pts_bp":    -20,
-        "pts_bilans":-19,
-        "srv_suma":  -18,
-        "srv_bledy": -17,
-        "srv_asy":   -16,
-        "rec_suma":  -14,
-        "rec_bledy": -13,
-        "rec_poz_pct":  -12,
-        "rec_perf_pct": -11,
-        "atk_suma":  -10,
-        "atk_bledy":  -9,
-        "atk_blok":   -8,
-        "atk_pkt":    -7,
-        "blk_pkt":    -4,
+        "pts_suma": -21, "pts_bp": -20, "pts_bilans": -19,
+        "srv_suma": -18, "srv_bledy": -17, "srv_asy": -16,
+        "rec_suma": -14, "rec_bledy": -13,
+        "rec_poz_pct": -12, "rec_perf_pct": -11,
+        "atk_suma": -10, "atk_bledy": -9, "atk_blok": -8,
+        "atk_pkt": -7, "blk_pkt": -4,
     }
     N_STAT_COLS = 21
     PCT_FROM_TOTAL = {"rec_poz_pct", "rec_perf_pct"}
@@ -525,10 +524,12 @@ def parsuj_html(html, game_id, sezon):
 
         totals = {c: 0 for c in STAT_COLS}
         player_count = 0
-        SKIP_KW = ["Suma z", "Punkty", "Zagrywka", "total", "zawodnika",
-                   "Players total", "Suma zawodnika"]
+        SKIP_KW = [
+            "Suma z", "Punkty", "Zagrywka", "total", "zawodnika",
+            "Players total", "Suma zawodnika"
+        ]
 
-        rec_pos_sum  = 0.0
+        rec_pos_sum = 0.0
         rec_perf_sum = 0.0
 
         for tr in tbl.find_all("tr"):
@@ -546,8 +547,10 @@ def parsuj_html(html, game_id, sezon):
             def rv(ridx):
                 return _safe_int(vals[ridx]) if len(vals) >= abs(ridx) else 0
 
-            played = (rv(-21) != 0 or rv(-18) > 0 or rv(-10) > 0
-                      or rv(-19) != 0 or rv(-14) > 0)
+            played = (
+                rv(-21) != 0 or rv(-18) > 0 or rv(-10) > 0
+                or rv(-19) != 0 or rv(-14) > 0
+            )
             if not played:
                 continue
 
@@ -559,15 +562,15 @@ def parsuj_html(html, game_id, sezon):
 
             rec = rv(-14)
             if rec > 0:
-                poz_str  = vals[-12] if len(vals) >= 12 else "0"
+                poz_str = vals[-12] if len(vals) >= 12 else "0"
                 perf_str = vals[-11] if len(vals) >= 11 else "0"
-                rec_pos_sum  += _safe_int(poz_str)  * rec
+                rec_pos_sum += _safe_int(poz_str) * rec
                 rec_perf_sum += _safe_int(perf_str) * rec
 
             player_count += 1
 
         if totals["rec_suma"] > 0:
-            totals["rec_poz_pct"]  = round(rec_pos_sum  / totals["rec_suma"])
+            totals["rec_poz_pct"] = round(rec_pos_sum / totals["rec_suma"])
             totals["rec_perf_pct"] = round(rec_perf_sum / totals["rec_suma"])
 
         return totals if player_count > 0 else None
@@ -579,28 +582,31 @@ def parsuj_html(html, game_id, sezon):
             stat_tables_parsed.append(ts)
 
     if len(stat_tables_parsed) < 2:
-        snippet = " ".join(page_text.split())[:200]
-        return None, f"znaleziono tylko {len(stat_tables_parsed)} tabel statystyk — strona: {snippet!r}"
+        return None, f"only {len(stat_tables_parsed)} statistic tables found"
 
     team_stats = []
     for ts in stat_tables_parsed[:2]:
-        ts["atk_skut_pct"] = (round(ts["atk_pkt"] / ts["atk_suma"] * 100)
-                              if ts["atk_suma"] > 0 else 0)
+        ts["atk_skut_pct"] = (
+            round(ts["atk_pkt"] / ts["atk_suma"] * 100)
+            if ts["atk_suma"] > 0 else 0
+        )
         team_stats.append(ts)
 
     t1 = team_names[0] if len(team_names) > 0 else "Druzyna1"
     t2 = team_names[1] if len(team_names) > 1 else "Druzyna2"
 
     return _build_rows(
-        game_id, sezon, t1, t2, sets1, sets2,
+        game_id, season, t1, t2, sets1, sets2,
         team_stats[0], team_stats[1], "HTML",
         set_scores=set_scores,
     ), None
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# HTML fallback: tylko scoreboard (gdy brak tabel statystyk w HTML)
+# Step 2c — HTML scoreboard only (fallback)
 # ─────────────────────────────────────────────────────────────────────────────
-def parsuj_html_scoreboard_only(html, game_id, sezon):
+def parse_html_scoreboard_only(html, game_id, season):
+    """Parse only the scoreboard from HTML when full statistics are unavailable."""
     soup = BeautifulSoup(html, "html.parser")
 
     team1, team2 = _extract_teams_from_match_box(soup, game_id)
@@ -609,7 +615,7 @@ def parsuj_html_scoreboard_only(html, game_id, sezon):
     if sets1 is None:
         sets1, sets2 = _extract_sets_from_scoreboard_box(soup, game_id)
     if sets1 is None:
-        return None, "brak przebiegu meczu i brak scoreboardu setów w HTML"
+        return None, "no set scores found in HTML"
 
     n_sets = sets1 + sets2
     set_scores_all = _extract_set_scores_from_html(soup)
@@ -621,7 +627,7 @@ def parsuj_html_scoreboard_only(html, game_id, sezon):
 
     return _build_rows(
         game_id=game_id,
-        sezon=sezon,
+        season=season,
         team1=team1,
         team2=team2,
         sets1=sets1,
@@ -632,13 +638,15 @@ def parsuj_html_scoreboard_only(html, game_id, sezon):
         set_scores=set_scores,
     ), None
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Budowanie wiersza CSV
+# CSV row builder
 # ─────────────────────────────────────────────────────────────────────────────
-def _build_rows(game_id, sezon, team1, team2, sets1, sets2, s1, s2, source, set_scores=None):
+def _build_rows(game_id, season, team1, team2, sets1, sets2,
+                s1, s2, source, set_scores=None):
     row = {
         "game_id": game_id,
-        "sezon": sezon,
+        "sezon": season,
         "source": source,
         "druzyna_A": team1,
         "druzyna_B": team2,
@@ -655,22 +663,26 @@ def _build_rows(game_id, sezon, team1, team2, sets1, sets2, s1, s2, source, set_
     for k, v in s2.items():
         row[f"B_{k}"] = v
 
-    # diff tylko gdy to liczby (dla HTML_SCOREBOARD_ONLY będą puste)
     for k in s1:
-        row[f"diff_{k}"] = (s1[k] - s2[k]) if isinstance(s1[k], int) and isinstance(s2[k], int) else ""
+        row[f"diff_{k}"] = (
+            (s1[k] - s2[k]) if isinstance(s1[k], int) and isinstance(s2[k], int)
+            else ""
+        )
 
     for fn in FIELDNAMES:
         row.setdefault(fn, "")
 
     return [row]
 
-# ─────────────────────────────────────────────────────────────────────────────
-# KROK 3 — PDF → HTML fallback
-# ─────────────────────────────────────────────────────────────────────────────
-def pobierz_mecz(game_id, sezon, tour_id):
-    pdf_err = "nie próbowano"
 
-    # 1) próba PDF
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 3 — fetch match data (PDF → HTML → scoreboard fallback)
+# ─────────────────────────────────────────────────────────────────────────────
+def fetch_match(game_id, season, tour_id):
+    """Fetch match data trying PDF first, then HTML, then scoreboard-only."""
+    pdf_err = "not attempted"
+
+    # 1) Try PDF
     try:
         r = requests.get(
             f"{BASE_URL}/games/action/stats/id/{game_id}/tour/{tour_id}.html",
@@ -679,16 +691,16 @@ def pobierz_mecz(game_id, sezon, tour_id):
         )
         ct = r.headers.get("Content-Type", "")
         if r.status_code == 200 and ("pdf" in ct.lower() or r.content[:4] == b"%PDF"):
-            rows, err = parsuj_pdf(r.content, game_id, sezon)
+            rows, err = parse_pdf(r.content, game_id, season)
             if rows:
                 return rows, "PDF", None
             pdf_err = err or "PDF parse failed"
         else:
-            pdf_err = f"brak PDF (status={r.status_code}, ct={ct[:40]})"
+            pdf_err = f"no PDF (status={r.status_code})"
     except Exception as e:
         pdf_err = str(e)
 
-    # 2) fallback HTML
+    # 2) Fallback to HTML
     try:
         r = requests.get(
             f"{BASE_URL}/games/action/show/id/{game_id}/tour/{tour_id}.html",
@@ -698,97 +710,82 @@ def pobierz_mecz(game_id, sezon, tour_id):
         if r.status_code != 200:
             return None, None, f"HTML HTTP {r.status_code}"
 
-        # 2a) pełne statystyki (jeśli statyczne tabele są w HTML)
-        rows, err = parsuj_html(r.text, game_id, sezon)
+        rows, err = parse_html(r.text, game_id, season)
         if rows:
             return rows, "HTML", None
 
-        # 2b) ostatecznie: tylko scoreboard
-        rows2, err2 = parsuj_html_scoreboard_only(r.text, game_id, sezon)
+        rows2, err2 = parse_html_scoreboard_only(r.text, game_id, season)
         if rows2:
             return rows2, "HTML_SCOREBOARD_ONLY", None
 
-        return None, None, f"PDF({pdf_err}) | HTML({err}) | HTML_SCOREBOARD_ONLY({err2})"
+        return None, None, (
+            f"PDF({pdf_err}) | HTML({err}) | SCOREBOARD({err2})"
+        )
     except Exception as e:
         return None, None, f"PDF({pdf_err}) | HTML exception: {e}"
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# GŁÓWNA PĘTLA (zapis przyrostowy + resume)
+# Main loop (incremental write + resume)
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
-    # Wczytaj już pobrane ID (resume)
-    istniejace_ids = set()
+    existing_ids = set()
     if os.path.exists(OUTPUT_CSV):
         with open(OUTPUT_CSV, "r", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
             for row in reader:
                 gid = (row.get("game_id") or "").strip()
                 if gid:
-                    istniejace_ids.add(gid)
-        if istniejace_ids:
-            print(f"Plik istnieje — {len(istniejace_ids)} meczów już w bazie, wznawiam.")
+                    existing_ids.add(gid)
+        if existing_ids:
+            print(f"File exists — {len(existing_ids)} matches already in database, resuming.")
 
-    bledy = []
-
-    # Otwórz plik CSV w trybie append
-    plik_istnieje = os.path.exists(OUTPUT_CSV)
+    errors = []
+    file_exists = os.path.exists(OUTPUT_CSV)
     f_out = open(OUTPUT_CSV, "a", newline="", encoding="utf-8-sig")
     w = csv.DictWriter(f_out, fieldnames=FIELDNAMES)
-    if not plik_istnieje:
+    if not file_exists:
         w.writeheader()
         f_out.flush()
 
-    for sezon, tour_id in SEZONY.items():
-        ids = pobierz_id_meczow(tour_id, sezon)
+    for season, tour_id in SEASONS.items():
+        ids = get_match_ids(tour_id, season)
         time.sleep(DELAY)
 
         for i, gid in enumerate(ids, 1):
             gid_str = str(gid)
 
-            # Resume: pomiń już pobrane
-            if gid_str in istniejace_ids:
-                print(f"[{sezon}] {i:3d}/{len(ids)} ID={gid} ... [JUŻ JEST — pomijam]")
+            if gid_str in existing_ids:
                 continue
 
-            print(f"[{sezon}] {i:3d}/{len(ids)} ID={gid} ...", end=" ", flush=True)
-            rows, source, err = pobierz_mecz(gid, sezon, tour_id)
+            rows, source, err = fetch_match(gid, season, tour_id)
 
             if rows:
                 row = rows[0]
-                sb = ""
-                if row.get("A_scoreboard_points") != "" and row.get("B_scoreboard_points") != "":
-                    sb = f" | SB {row['A_scoreboard_points']}:{row['B_scoreboard_points']}"
-                print(f"[{source}] {row['druzyna_A'][:18]} {row['sety_A']}:{row['sety_B']} {row['druzyna_B'][:18]}{sb}")
-                # Zapisz natychmiast
                 w.writerow(row)
                 f_out.flush()
-                istniejace_ids.add(gid_str)
+                existing_ids.add(gid_str)
             else:
-                print(f"SKIP — {err}")
-                bledy.append({"sezon": sezon, "game_id": gid, "blad": err})
+                errors.append({"season": season, "game_id": gid, "error": err})
 
             time.sleep(DELAY)
 
     f_out.close()
 
-    # Błędy
-    if bledy:
-        bledy_istnieja = os.path.exists("tauron_bledy.csv")
-        with open("tauron_bledy.csv", "a", newline="", encoding="utf-8-sig") as f:
-            wb = csv.DictWriter(f, fieldnames=["sezon","game_id","blad"])
-            if not bledy_istnieja:
+    if errors:
+        err_exists = os.path.exists("tauron_errors.csv")
+        with open("tauron_errors.csv", "a", newline="", encoding="utf-8-sig") as f:
+            wb = csv.DictWriter(f, fieldnames=["season", "game_id", "error"])
+            if not err_exists:
                 wb.writeheader()
-            wb.writerows(bledy)
+            wb.writerows(errors)
 
-    # Podsumowanie
-    print()
     with open(OUTPUT_CSV, "r", encoding="utf-8-sig") as f:
         total = sum(1 for _ in csv.DictReader(f))
-    print("="*60)
-    print(f"GOTOWE: {total} meczów → {OUTPUT_CSV}")
-    if bledy:
-        print(f"Pominięte: {len(bledy)} → tauron_bledy.csv")
-    print("="*60)
+    print(f"Done: {total} matches → {OUTPUT_CSV}")
+    if errors:
+        print(f"Skipped: {len(errors)} matches → tauron_errors.csv")
+
 
 if __name__ == "__main__":
     main()

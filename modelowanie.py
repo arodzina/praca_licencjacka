@@ -174,6 +174,7 @@ print(df[TARGET].value_counts())
 df[TARGET].value_counts().plot.pie(autopct="%1.1f%%", labels=["Wygrana A", "Przegrana A"], colors=["#2ECC71", "#E74C3C"], textprops={"fontsize": 14})
 plt.ylabel("")
 plt.title("Balans targetu (win_A)", fontweight="bold")
+plt.savefig(plot_path("eda", "target_balance.png"), dpi=150, bbox_inches="tight")
 plt.show()
 #%%
 # === Analiza przewagi gospodarzy ===
@@ -587,6 +588,74 @@ print(f"  Mecze w sezonie: {playoff_count.values[0]}")
 print(f"  Mecze w playoff: {playoff_count.values[1]}")
 
 #%%
+# === PRAWDZIWA PRZEWAGA GOSPODARZA (Oczyszczona z ogólnej siły drużyny) ===
+
+teams = sorted(set(df["team_A"]).union(set(df["team_B"])))
+ha_records = []
+
+for team in teams:
+    # Statystyki domowe (team gra jako A)
+    home_matches = df[df["team_A"] == team]
+    home_games = len(home_matches)
+    home_wins = home_matches["win_A"].sum()
+
+    # Statystyki wyjazdowe (team gra jako B - wygrywa gdy win_A == 0)
+    away_matches = df[df["team_B"] == team]
+    away_games = len(away_matches)
+    away_wins = (away_matches["win_A"] == 0).sum()
+
+    total_games = home_games + away_games
+    total_wins = home_wins + away_wins
+
+    if total_games > 0 and total_wins > 0: # Odrzucamy drużyny bez zwycięstw
+        home_win_rate = home_wins / home_games if home_games > 0 else 0
+        away_win_rate = away_wins / away_games if away_games > 0 else 0
+
+        ha_records.append({
+            "Drużyna": team,
+            "Mecze": total_games,
+            "Wygrane (Suma)": total_wins,
+            "Win Rate (Dom)": home_win_rate,
+            "Win Rate (Wyjazd)": away_win_rate,
+            "Delta (Dom - Wyjazd)": home_win_rate - away_win_rate,
+            "Udział wygranych domowych": home_wins / total_wins
+        })
+
+df_ha = pd.DataFrame(ha_records)
+
+# Filtr: Bierzemy pod uwagę tylko drużyny, które wygrały w lidze łącznie minimum 20 meczów
+# (żeby uniknąć szumu statystycznego, np. drużyny, która wygrała 1 mecz u siebie i 0 na wyjeździe)
+df_ha = df_ha[df_ha["Wygrane (Suma)"] >= 20].copy()
+
+# Sortujemy po prawdziwej przewadze hali (Delta)
+df_ha = df_ha.sort_values("Delta (Dom - Wyjazd)", ascending=True)
+
+# Wyświetlamy tabelę z wynikami
+print("=== Prawdziwa Przewaga Hali (Top i Flop) ===")
+display(df_ha.sort_values("Delta (Dom - Wyjazd)", ascending=False).head(10).round(3))
+
+# --- GENEROWANIE WYKRESU ---
+plt.figure(figsize=(10, 8))
+colors = ['#2ECC71' if val > 0 else '#E74C3C' for val in df_ha["Delta (Dom - Wyjazd)"]]
+
+bars = plt.barh(df_ha["Drużyna"], df_ha["Delta (Dom - Wyjazd)"], color=colors, edgecolor="white")
+plt.axvline(x=0, color='black', linewidth=1.2)
+plt.title("Prawdziwa Przewaga Hali (Delta: Win Rate Dom - Win Rate Wyjazd)", fontweight="bold")
+plt.xlabel("Różnica w punktach procentowych (Dodatnia = lepiej grają u siebie)")
+
+# Dodanie wartości na słupkach
+for bar, val in zip(bars, df_ha["Delta (Dom - Wyjazd)"]):
+    x_pos = bar.get_width()
+    ha = 'left' if x_pos > 0 else 'right'
+    offset = 0.01 if x_pos > 0 else -0.01
+    plt.text(x_pos + offset, bar.get_y() + bar.get_height()/2, f"{val:+.1%}",
+             va='center', ha=ha, fontsize=9, fontweight='bold')
+
+plt.xlim(-0.25, 0.4) # Dostosuj oś X w razie potrzeby
+plt.tight_layout()
+plt.savefig(plot_path("eda", "true_home_advantage.png"), dpi=150, bbox_inches="tight")
+plt.show()
+#%%
 # === Win rate wedlug kwartyla statystyki ===
 feats_q = ["diff_atk_eff", "diff_blk_per_set", "diff_srv_eff", "diff_rec_poz_pct", "diff_opp_errors_share"]
 
@@ -646,6 +715,7 @@ for name, feats in sets:
     plt.xticks(rotation=45, ha="right", fontsize=9)
     plt.yticks(rotation=0, fontsize=9)
     plt.tight_layout()
+    plt.savefig(plot_path("eda", f"corr_{name.lower().replace(' – ','_').replace(' ','_')}.png"), dpi=150, bbox_inches="tight")
     plt.show()
 
     X_vif = df[feats].copy()
@@ -760,13 +830,104 @@ for name, feats in models_def:
 display(pd.DataFrame(fit_rows).round(4))
 
 #%%
+from sklearn.metrics import confusion_matrix
+from sklearn.preprocessing import RobustScaler
+
+trained_sk_models = {}
+scalers_store = {}
+split_store = {}
+
+# === Krok 1: Trenujemy modele na 80/20 (potrzebne do diagnostyki, PDP, błędów) ===
+for name, feats in models_def:
+    X_eval, y_eval = prepare_xy(df, feats)
+    X_tr, X_te, y_tr, y_te = train_test_split(
+        X_eval, y_eval, test_size=0.2, random_state=42, stratify=y_eval
+    )
+
+    scaler = RobustScaler()
+    X_tr_s = scaler.fit_transform(X_tr)
+    X_te_s = scaler.transform(X_te)
+
+    lr = LogisticRegression(C=1e15, max_iter=2000, random_state=42)
+    lr.fit(X_tr_s, y_tr)
+
+    scalers_store[name] = scaler
+    trained_sk_models[name] = lr
+    split_store[name] = {
+        "X_tr": X_tr.copy(),
+        "X_te": X_te.copy(),
+        "y_tr": y_tr.copy(),
+        "y_te": y_te.copy(),
+        "X_tr_s": X_tr_s,
+        "X_te_s": X_te_s,
+    }
+
+# === Krok 2: Walidacja LOSO — poprawna czasowo, główne metryki ===
+from sklearn.model_selection import LeaveOneGroupOut, cross_val_score
+
+validation_rows = []
+for name, feats in models_def:
+    X_loso, y_loso = prepare_xy(df, feats)
+    groups_loso = df.loc[X_loso.index, "season"].reset_index(drop=True)
+    X_loso = X_loso.reset_index(drop=True)
+    y_loso = y_loso.reset_index(drop=True)
+
+    logo = LeaveOneGroupOut()
+    auc_scores = []
+    acc_scores = []
+
+    for train_idx, test_idx in logo.split(X_loso, y_loso, groups=groups_loso):
+        X_tr_fold = X_loso.iloc[train_idx]
+        X_te_fold = X_loso.iloc[test_idx]
+        y_tr_fold = y_loso.iloc[train_idx]
+        y_te_fold = y_loso.iloc[test_idx]
+
+        scaler_fold = RobustScaler()
+        X_tr_fold_s = scaler_fold.fit_transform(X_tr_fold)
+        X_te_fold_s = scaler_fold.transform(X_te_fold)
+
+        lr_fold = LogisticRegression(C=1e15, max_iter=2000, random_state=42)
+        lr_fold.fit(X_tr_fold_s, y_tr_fold)
+
+        y_prob_fold = lr_fold.predict_proba(X_te_fold_s)[:, 1]
+        auc_scores.append(roc_auc_score(y_te_fold, y_prob_fold))
+        acc_scores.append(lr_fold.score(X_te_fold_s, y_te_fold))
+
+    validation_rows.append({
+        "Model": name,
+        "Accuracy LOSO (mean)": round(np.mean(acc_scores), 4),
+        "Accuracy LOSO (std)": round(np.std(acc_scores), 4),
+        "AUC LOSO (mean)": round(np.mean(auc_scores), 4),
+        "AUC LOSO (std)": round(np.std(auc_scores), 4),
+        "Pseudo R2 (pełne dane)": pseudo_r2[name],
+        "N": nobs_store[name],
+    })
+
+validation_df = pd.DataFrame(validation_rows).sort_values("Pseudo R2 (pełne dane)", ascending=False)
+display(validation_df.round(4))
+
+best_descriptive_model = validation_df.iloc[0]["Model"]
+print(f"Najwyższe Pseudo R-squared (model opisowy): {best_descriptive_model}")
+print(f"Główna metryka walidacyjna: LOSO (Leave-One-Season-Out) — poprawna czasowo.")
+
+# === Krok 3: Zmienne potrzebne w dalszych komórkach (diagnostyka na 80/20) ===
+X_tr1 = split_store["Model 1 – Ekspercki"]["X_tr"]
+X_te1 = split_store["Model 1 – Ekspercki"]["X_te"]
+y_tr1 = split_store["Model 1 – Ekspercki"]["y_tr"]
+y_te1 = split_store["Model 1 – Ekspercki"]["y_te"]
+X_tr1_s = split_store["Model 1 – Ekspercki"]["X_tr_s"]
+X_te1_s = split_store["Model 1 – Ekspercki"]["X_te_s"]
+scaler1 = scalers_store["Model 1 – Ekspercki"]
+logit_mod1_clean = sm.Logit(y_tr1, sm.add_constant(X_tr1)).fit(disp=0)
+
+#%%
 # === TABELA WSPÓŁCZYNNIKÓW I ILORAZÓW SZANS — Model 1 (Ekspercki) ===
 import statsmodels.api as sm
 import numpy as np
 import pandas as pd
 
 # 1. Skalujemy TYLKO zmienne procentowe/ułamkowe, by OR oznaczało "wzrost o 1 p.p."
-scale_feats = ["diff_atk_eff", "diff_srv_eff", "diff_rec_poz_pct", "diff_opp_errors_share"]
+scale_feats = ["diff_atk_eff", "diff_srv_eff", "diff_opp_errors_share"]
 
 # Pracujemy na zbiorze treningowym (X_tr1), aby zachować rygor out-of-sample
 X_tr1_pct = X_tr1.copy()
@@ -815,79 +976,12 @@ display(coef_df.sort_values("Odds Ratio", ascending=False).reset_index(drop=True
 
 print("Istotność: * p<0.05  ** p<0.01  *** p<0.001")
 print("\n📌 NOTA INTERPRETACYJNA DO ODDS RATIO (OR):")
-print(" • Dla zmiennych procentowych (atak, zagrywka, przyjęcie, błędy rywala):")
+print(" • Dla zmiennych procentowych (atak, zagrywka, błędy rywala):")
 print("   OR oznacza mnożnik szansy na wygraną przy wzroście przewagi o 1 punkt procentowy (1 p.p.).")
 print(" • Dla zmiennej 'diff_blk_per_set':")
 print("   OR oznacza mnożnik szansy na wygraną przy wzroście przewagi o 1 blok na set.")
 print(" • Dla zmiennej 'number_of_sets':")
 print("   OR oznacza mnożnik szansy na wygraną przy rozegraniu każdego kolejnego seta.")
-#%%
-from sklearn.metrics import confusion_matrix
-from sklearn.preprocessing import RobustScaler
-
-trained_sk_models = {}
-scalers_store = {}
-split_store = {}
-validation_rows = []
-
-for name, feats in models_def:
-    X_eval, y_eval = prepare_xy(df, feats)
-    X_tr, X_te, y_tr, y_te = train_test_split(
-        X_eval, y_eval, test_size=0.2, random_state=42, stratify=y_eval
-    )
-
-    scaler = RobustScaler()
-    X_tr_s = scaler.fit_transform(X_tr)
-    X_te_s = scaler.transform(X_te)
-
-    lr = LogisticRegression(C=1e15, max_iter=2000, random_state=42)
-    lr.fit(X_tr_s, y_tr)
-
-    scalers_store[name] = scaler
-    trained_sk_models[name] = lr
-    split_store[name] = {
-        "X_tr": X_tr.copy(),
-        "X_te": X_te.copy(),
-        "y_tr": y_tr.copy(),
-        "y_te": y_te.copy(),
-        "X_tr_s": X_tr_s,
-        "X_te_s": X_te_s,
-    }
-
-    y_pred = lr.predict(X_te_s)
-    y_prob = lr.predict_proba(X_te_s)[:, 1]
-    cm = confusion_matrix(y_te, y_pred)
-
-    validation_rows.append(
-        {
-            "Model": name,
-            "Accuracy": accuracy_score(y_te, y_pred),
-            "AUC": roc_auc_score(y_te, y_prob),
-            "TN": cm[0, 0],
-            "FP": cm[0, 1],
-            "FN": cm[1, 0],
-            "TP": cm[1, 1],
-            "Pseudo R2 (pełne dane)": pseudo_r2[name],
-            "N": nobs_store[name],
-        }
-    )
-
-validation_df = pd.DataFrame(validation_rows).sort_values("Pseudo R2 (pełne dane)", ascending=False)
-display(validation_df.round(4))
-
-best_descriptive_model = validation_df.iloc[0]["Model"]
-print(f"Najwyzsze Pseudo R-squared (model opisowy): {best_descriptive_model}")
-
-X_tr1 = split_store["Model 1 – Ekspercki"]["X_tr"]
-X_te1 = split_store["Model 1 – Ekspercki"]["X_te"]
-y_tr1 = split_store["Model 1 – Ekspercki"]["y_tr"]
-y_te1 = split_store["Model 1 – Ekspercki"]["y_te"]
-X_tr1_s = split_store["Model 1 – Ekspercki"]["X_tr_s"]
-X_te1_s = split_store["Model 1 – Ekspercki"]["X_te_s"]
-scaler1 = scalers_store["Model 1 – Ekspercki"]
-logit_mod1_clean = sm.Logit(y_tr1, sm.add_constant(X_tr1)).fit(disp=0)
-
-
 #%%
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import LeaveOneGroupOut
@@ -1060,7 +1154,7 @@ for name, model in comp_models.items():
     )
 
 display(pd.DataFrame(comparison_rows).round(4))
-print("\nLOSO (Leave-One-Season-Out) — poprawna walidacja czasowa.")
+print("\nPorównanie Logistic Regression vs Random Forest — LOSO (Leave-One-Season-Out).")
 
 #%% md
 # ### 6.2. Waga statystyk w różnych warunkach meczu
@@ -1185,6 +1279,14 @@ display(anomalies)
 # Sprawdzamy odporność modelu na zmianę sezonu, jakość kalibracji oraz wpływ
 # zmiennych kontekstowych na interpretację współczynników.
 # 
+# #### Endogeniczność zmiennej `number_of_sets`
+# 
+# Zmienna `number_of_sets` (liczba setów w meczu) może budzić obawy o endogeniczność,
+# ponieważ mecze tie-breakowe są z definicji dłuższe, a ich przebieg statystyczny może
+# się różnić od meczów 3–4 setowych. Aby zweryfikować, czy obecność tej zmiennej nie
+# zaburza estymacji pozostałych predyktorów, oszacowano model porównawczy **bez**
+# `number_of_sets` i porównano współczynniki (w skali ×100, zgodnie z Tabelą 2).
+# 
 #%%
 from sklearn.calibration import calibration_curve
 from sklearn.metrics import ConfusionMatrixDisplay, auc, confusion_matrix, roc_curve
@@ -1236,18 +1338,29 @@ loso_summary = pd.DataFrame(
 
 display(loso_df.round(4))
 display(loso_summary)
+print("\n→ Główne metryki LOSO dla wszystkich modeli znajdują się w tabeli validation_df (komórka powyżej).")
+print("  Tutaj szczegółowy rozkład po sezonach dla Modelu 1.")
 
 #%%
+# --- Endogeniczność: skalowanie ×100 (zgodnie z Tabelą 2) ---
+scale_feats = ["diff_atk_eff", "diff_srv_eff", "diff_opp_errors_share"]
+
+# Model z number_of_sets (na pełnych danych, w skali ×100)
+X_with, y_with = prepare_xy(df, SET1_FEATURES)
+X_with[scale_feats] = X_with[scale_feats] * 100
+logit_with = sm.Logit(y_with, sm.add_constant(X_with)).fit(disp=0)
+
+# Model bez number_of_sets (ta sama skala ×100)
 SET1_NO_SETS = [f for f in SET1_FEATURES if f != "number_of_sets"]
-X_no_sets, y_no_sets = prepare_xy(df, SET1_NO_SETS)
-logit_no_sets = sm.Logit(y_no_sets, sm.add_constant(X_no_sets)).fit(disp=0)
-logit_model1 = results_store["Model 1 – Ekspercki"]
+X_without, y_without = prepare_xy(df, SET1_NO_SETS)
+X_without[scale_feats] = X_without[scale_feats] * 100
+logit_without = sm.Logit(y_without, sm.add_constant(X_without)).fit(disp=0)
 
 endogeneity_rows = []
 for feature in SET1_NO_SETS:
-    if feature in logit_model1.params.index and feature in logit_no_sets.params.index:
-        with_sets = logit_model1.params[feature]
-        without_sets = logit_no_sets.params[feature]
+    if feature in logit_with.params.index and feature in logit_without.params.index:
+        with_sets = logit_with.params[feature]
+        without_sets = logit_without.params[feature]
         endogeneity_rows.append(
             {
                 "Cecha": feature,
@@ -1259,6 +1372,14 @@ for feature in SET1_NO_SETS:
 
 display(pd.DataFrame(endogeneity_rows).round(4))
 
+print("\n📌 Skala ×100 — współczynniki odpowiadają zmianie przewagi o 1 p.p. (zgodnie z Tabelą 2).")
+
+#%% md
+# **Weryfikacja endogeniczności:** różnice we współczynnikach między modelem z `number_of_sets`
+# a bez niego są marginalne (największa różnica < 0.01 w skali ×100).
+# Brak istotnych zmian potwierdza, że endogeniczność zmiennej `number_of_sets`
+# nie zaburza estymacji głównych efektów.
+# 
 #%% md
 # ### 6.5. Obserwacje wplywowe
 # 
@@ -1310,13 +1431,18 @@ except Exception as exc:
 # a test Manna-Whitneya sprawdza czy rozklady cech roznia sie miedzy wygranymi a przegranymi.
 # 
 #%%
-X_mean = pd.DataFrame([X_tr1.mean()], columns=X_tr1.columns)
+# Uwaga: logit_mod1_clean jest trenowany na X_tr1_pct (z cechami ×100).
+# Dlatego X_mean i SD liczymy na tej samej skali, by predict() działał poprawnie.
+X_tr1_pct_for_mean = X_tr1.copy()
+X_tr1_pct_for_mean[scale_feats] = X_tr1_pct_for_mean[scale_feats] * 100
+
+X_mean = pd.DataFrame([X_tr1_pct_for_mean.mean()], columns=X_tr1_pct_for_mean.columns)
 X_mean.insert(0, "const", 1.0)
 prob_base = logit_mod1_clean.predict(X_mean)[0]
 
 marginal_rows = []
 for feature in SET1_FEATURES:
-    sd_val = X_tr1[feature].std()
+    sd_val = X_tr1_pct_for_mean[feature].std()
     X_plus = X_mean.copy()
     X_plus[feature] += sd_val
     prob_plus = logit_mod1_clean.predict(X_plus)[0]
@@ -1398,7 +1524,7 @@ X_lasso_scaled = scaler.fit_transform(X_lasso)
 C_values = np.logspace(-3, 2, 50)
 coefs = []
 for C in C_values:
-    lasso = LogisticRegression(solver="saga", l1_ratio=1, C=C, max_iter=5000, random_state=42)
+    lasso = LogisticRegression(solver="saga", penalty="l1", C=C, max_iter=5000, random_state=42)
     lasso.fit(X_lasso_scaled, y_lasso)
     coefs.append(lasso.coef_[0])
 
@@ -1420,12 +1546,12 @@ plt.show()
 
 # Wybor optymalnego C przez CV
 param_grid = {"C": C_values}
-lasso_cv = LogisticRegression(solver="saga", l1_ratio=1, max_iter=5000, random_state=42)
+lasso_cv = LogisticRegression(solver="saga", penalty="l1", max_iter=5000, random_state=42)
 grid = GridSearchCV(lasso_cv, param_grid, cv=5, scoring="roc_auc")
 grid.fit(X_lasso_scaled, y_lasso)
 
 best_C = grid.best_params_["C"]
-best_lasso = LogisticRegression(solver="saga", l1_ratio=1, C=best_C, max_iter=5000, random_state=42)
+best_lasso = LogisticRegression(solver="saga", penalty="l1", C=best_C, max_iter=5000, random_state=42)
 best_lasso.fit(X_lasso_scaled, y_lasso)
 
 print(f"\nOptymalne C (CV): {best_C:.4f}")

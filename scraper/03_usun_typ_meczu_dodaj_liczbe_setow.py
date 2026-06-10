@@ -1,22 +1,29 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+03_usun_typ_meczu_dodaj_liczbe_setow.py
+
+Removes the 'match_type' column and adds 'number_of_sets'
+(computed as sety_A + sety_B) to a CSV file.
+
+Usage:
+    python scraper/03_usun_typ_meczu_dodaj_liczbe_setow.py
+"""
 
 import csv
 
-INP = "data/tauron_liga_statystyki_merged.csv"   # albo tauron_liga_statystyki.csv
+INP = "data/tauron_liga_statystyki_merged.csv"
 OUT = "tauron_liga_statystyki_final.csv"
+DELIM = ";"
 
-DELIM = ";"  # u Ciebie pliki są na średnikach
 
 def main():
     with open(INP, "r", encoding="utf-8-sig", newline="") as f_in:
         r = csv.DictReader(f_in, delimiter=DELIM)
         old_fields = list(r.fieldnames or [])
 
-        # usuwamy match_type
         fieldnames = [c for c in old_fields if c != "match_type"]
 
-        # dodajemy number_of_sets (np. po sety_B jeśli istnieje)
         if "number_of_sets" not in fieldnames:
             if "sety_B" in fieldnames:
                 idx = fieldnames.index("sety_B") + 1
@@ -29,22 +36,19 @@ def main():
             w.writeheader()
 
             for row in r:
-                # policz liczbę setów
                 try:
                     a = int((row.get("sety_A") or "").strip())
                     b = int((row.get("sety_B") or "").strip())
                     row["number_of_sets"] = a + b
-                except:
+                except Exception:
                     row["number_of_sets"] = ""
 
-                # usuń match_type z wiersza (żeby nie przeszkadzał)
                 row.pop("match_type", None)
-
-                # zapisz tylko kolumny docelowe
                 out_row = {k: row.get(k, "") for k in fieldnames}
                 w.writerow(out_row)
 
-    print("Zapisano:", OUT)
+    print(f"Saved: {OUT}")
+
 
 if __name__ == "__main__":
     main()

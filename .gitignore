@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.venv/
+env/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Raw / intermediate data (keep only final processed CSVs)
+data/tauron_liga_statystyki.csv
+data/tauron_liga_statystyki_*.csv
+data/scoreboard_update.csv
+data/tauron_bledy.csv
+data/tauron_errors.csv
+data/processed_data.before_playoff_backup.csv
+data/processed_data.csv
+data/processed_data_chrono_playoff.csv
+data/processed_data_with_playoff.csv
+data/processed_data_with_playoff_scoreboard.csv
+data/processed_master.csv
+data/tauron_liga_statystyki.xlsx
+data/processed_prematch.csv
+
+# Scraper cache
+scraper/__pycache__/
+
+# Original (uncleaned) notebook — use Polish-named version instead
+postmatch_modelling.ipynb

@@ -1,8 +1,8 @@
-# features.py
+# cechy.py
 # Czyta: data/tauron_liga_statystyki_final.csv
 # Tworzy:
 #   - df_master   (pełny, do EDA/debug/aneks)
-#   - df_postmatch (CLEAN: ID + (czy_playoff) + target + diff_*)
+#   - df_postmatch (CLEAN: ID + (is_playoff) + target + diff_*)
 
 from __future__ import annotations
 
@@ -376,8 +376,10 @@ def add_win_loss_features(df: pd.DataFrame) -> pd.DataFrame:
 # =========================
 # 5) PLAYOFF CONTEXT
 # =========================
-def add_czy_playoff(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.sort_values(["season", "game_id"]).reset_index(drop=True).copy()
+def add_is_playoff(df: pd.DataFrame) -> pd.DataFrame:
+    # Sortowanie chronologiczne: najpierw data, potem game_id dla stabilności
+    sort_cols = ["season", "date", "game_id"] if "date" in df.columns else ["season", "game_id"]
+    df = df.sort_values(sort_cols).reset_index(drop=True).copy()
 
     # Liczymy, który to mecz tych dwóch drużyn w danym sezonie
     df["h2h_pair"] = df.apply(lambda r: tuple(sorted((r["team_A"], r["team_B"]))), axis=1)
@@ -385,7 +387,7 @@ def add_czy_playoff(df: pd.DataFrame) -> pd.DataFrame:
     df = df.drop(columns=["h2h_pair"])
 
     # Playoff = co najmniej 3. mecz tych drużyn w sezonie
-    df["czy_playoff"] = (df["h2h_matches_before"] >= 2).astype(int)
+    df["is_playoff"] = (df["h2h_matches_before"] >= 2).astype(int)
     return df.drop(columns=["h2h_matches_before"])
 
 # =========================
@@ -397,10 +399,11 @@ def select_postmatch_cols(df_master: pd.DataFrame) -> pd.DataFrame:
         # ===== ID / kontekst =====
         "game_id",
         "season",
+        "date",
         "team_A",
         "team_B",
         "number_of_sets",      # Grupa 5: długość meczu
-        "czy_playoff",         # Grupa 5: faza rozgrywek
+        "is_playoff",         # Grupa 5: faza rozgrywek
 
         # ===== target =====
         "win_A",
@@ -415,7 +418,7 @@ def select_postmatch_cols(df_master: pd.DataFrame) -> pd.DataFrame:
 
         # ===== Grupa 3: Zagrywka i Przyjęcie (Inicjacja akcji) =====
         "diff_srv_eff",        # Bilans asów i błędów
-        "diff_rec_poz_pct",    # Procent przyjęcia pozytywnego
+        "diff_rec_pos_pct",    # Procent przyjęcia pozytywnego
         "diff_srv_ace_rate",   # Presja zagrywką
 
         # ===== Grupa 4: Dyscyplina i Błędy Własne (Oddane punkty) =====
@@ -435,12 +438,18 @@ def select_postmatch_cols(df_master: pd.DataFrame) -> pd.DataFrame:
 def build_all(input_file: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     df_raw = load_final(input_file)
     df0 = rename_and_types(df_raw)
-    df0 = df0.sort_values(["season", "game_id"]).reset_index(drop=True)
+
+    # Dodanie dat meczów (potrzebne do chronologicznego wyznaczania playoff)
+    dates_df = pd.read_csv("data/match_dates.csv", encoding="utf-8-sig")
+    df0 = df0.merge(dates_df[["game_id", "date"]], on="game_id", how="left")
+    df0["date"] = pd.to_datetime(df0["date"], format="%d.%m.%Y", errors="coerce")
+
+    df0 = df0.sort_values(["season", "date", "game_id"]).reset_index(drop=True)
 
     df1 = add_match_features(df0)
     df2 = add_sideout_features(df1)
     df3 = add_win_loss_features(df2)
-    df4 = add_czy_playoff(df3)
+    df4 = add_is_playoff(df3)
     df_master = df4.drop(columns=DROP_ALWAYS, errors="ignore")
     df_postmatch = select_postmatch_cols(df_master)
 
