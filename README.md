@@ -9,7 +9,7 @@ Kod źródłowy do pracy licencjackiej dotyczącej wpływu statystyk meczowych n
 ├── analiza_i_modelowanie.ipynb       # Główny notebook z analizą i modelowaniem
 ├── cechy.py                          # Definicje cech
 ├── scraper/                           # Skrypty do zbierania danych
-│   ├── scraper_tauron.py           # Główny skrobacz (PDF → HTML → scoreboard)
+│   ├── scraper_tauron.py           # Główny scraper (PDF → HTML → scoreboard)
 │   ├── 01_pobierz_wyniki_setow.py    # Pobieranie punktów setowych
 │   ├── 02_scal_wyniki_setow.py       # Scalanie scoreboard z danymi
 │   ├── 03_usun_typ_meczu_dodaj_liczbe_setow.py
