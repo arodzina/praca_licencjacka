@@ -7,6 +7,7 @@ Kod źródłowy do pracy licencjackiej dotyczącej wpływu statystyk meczowych n
 ```
 .
 ├── analiza_i_modelowanie.ipynb    # Główny notebook z analizą i modelowaniem
+├── analiza_i_modelowanie.py       # To samo co .ipynb, w formacie .py (eksport)
 ├── cechy.py                       # Budowa cech (krok 5)
 ├── scraper/                        # Skrypty do zbierania danych
 │   ├── scraper_tauron.py          # (1) Główny scraper (PDF → HTML → scoreboard)
@@ -36,6 +37,7 @@ pip install -r requirements.txt
 4. **Finalne czyszczenie:** `python scraper/03_usun_typ_meczu_dodaj_liczbe_setow.py`
 5. **Budowa cech:** `python cechy.py`
 6. **Analiza i modelowanie:** otwórz `analiza_i_modelowanie.ipynb` w Jupyter
+   (alternatywnie: `analiza_i_modelowanie.py` — ten sam kod w formacie .py)
 
 > **Uwaga:** Plik `data/processed_postmatch.csv` (wynik kroku 5) znajduje się już w repozytorium,
 > więc do samego odtworzenia analizy wystarczy krok 6.
